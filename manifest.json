@@ -1,0 +1,11 @@
+{
+	"id": "checkbox-style-menu",
+	"name": "Checkbox Style Menu",
+	"version": "1.0.0",
+	"minAppVersion": "1.8.10",
+	"description": "Enhances Obsidian task checkboxes with a menu for selecting different checkbox styles (e.g., to-do, incomplete, done, canceled).",
+	"author": "ReticentEclectic",
+	"authorUrl": "https://github.com/ReticentEclectic",
+	"fundingUrl": "https://ko-fi.com/ReticentEclectic",
+	"isDesktopOnly": true
+}
