@@ -1,7 +1,7 @@
 
-# SmartMultiCheckbox
+# CheckboxStyleMenu
 
-**SmartMultiCheckbox** is an Obsidian plugin that enhances task checkboxes by allowing users to switch between multiple states (e.g., to-do, incomplete, done, canceled) via a long-press menu. Inspired by the multi-state checkboxes in the Minimal Theme, this plugin makes it faster and more intuitive to manage task statuses in your notes.
+**CheckboxStyleMenu** is an Obsidian plugin that enhances task checkboxes by allowing users to switch between multiple states (e.g., to-do, incomplete, done, canceled) via a long-press menu. Inspired by the multi-state checkboxes in the Minimal Theme, this plugin makes it faster and more intuitive to manage task statuses in your notes.
 
 ## Features
 
@@ -18,15 +18,15 @@
 
 ### Manual Installation
 
-1. Download the latest release from the [GitHub repository](https://github.com/ReticentEclectic/smart-multi-checkbox/releases) (or replace with your repo link).
-2. Extract the `smart-multi-checkbox` folder to your Obsidian plugins directory: `Vault/.obsidian/plugins/`.
+1. Download the latest release from the [GitHub repository](https://github.com/ReticentEclectic/checkbox-style-menu/releases) (or replace with your repo link).
+2. Extract the `checkbox-style-menu` folder to your Obsidian plugins directory: `Vault/.obsidian/plugins/`.
 3. In Obsidian, go to **Settings > Community Plugins**, enable **Community Plugins** if not already enabled, and toggle **SmartMultiCheckbox** to activate it.
 
 ### Via BRAT (Beta Release Automation Tool)
 
 1. Install the **Obsidian42 - BRAT** plugin from the Community Plugins directory.
 2. In Obsidian, go to **Settings > BRAT > Add Beta Plugin**.
-3. Enter the repository URL: `ReticentEclectic/smart-multi-checkbox` (replace with your actual repo if different).
+3. Enter the repository URL: `ReticentEclectic/checkbox-style-menu` (replace with your actual repo if different).
 4. Enable **SmartMultiCheckbox** in **Settings > Community Plugins**.
 
 ## Usage
@@ -45,7 +45,7 @@ If you find **SmartMultiCheckbox** helpful, consider supporting its developmen
 
 Contributions are welcome! To contribute:
 
-1. Fork the repository: `https://github.com/ReticentEclectic/smart-multi-checkbox` (replace with your repo).
+1. Fork the repository: `https://github.com/ReticentEclectic/checkbox-style-menu` (replace with your repo).
 2. Create a new branch for your feature or bug fix.
 3. Submit a pull request with a clear description of your changes.
 
@@ -53,7 +53,7 @@ Please follow the [Obsidian Plugin Guidelines](https://docs.obsidian.md/Plugins
 
 ## Issues
 
-If you encounter bugs or have feature requests, please open an issue on the [GitHub repository](https://github.com/ReticentEclectic/smart-multi-checkbox/issues) (replace with your repo).
+If you encounter bugs or have feature requests, please open an issue on the [GitHub repository](https://github.com/ReticentEclectic/checkbox-style-menu/issues) (replace with your repo).
 
 ## License
 
