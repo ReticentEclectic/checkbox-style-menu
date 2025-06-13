@@ -1,4 +1,4 @@
-import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild } from 'obsidian';
+import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting } from 'obsidian';
 import { EditorView } from '@codemirror/view';
 
 // Extend Editor interface to include CodeMirror instance
@@ -6,13 +6,66 @@ interface CodeMirrorEditor extends Editor {
     cm?: EditorView;
 }
 
+// Define settings interface
+interface CheckboxStyleSettings {
+    styles: { [symbol: string]: boolean };
+}
+
+// Default settings
+const DEFAULT_SETTINGS: CheckboxStyleSettings = {
+    styles: {
+        ' ': true,
+        '/': true,
+        'x': true,
+        '-': true,
+        '>': false,
+        '<': false,
+        '?': false,
+        '!': false,
+        '*': false,
+        '"': false,
+        'l': false,
+        'b': false,
+        'i': false,
+        'S': false,
+        'I': false,
+        'p': false,
+        'c': false,
+        'f': false,
+        'k': false,
+        'w': false,
+        'u': false,
+        'd': false,
+    },
+};
+
 export default class CheckboxStyleMenuPlugin extends Plugin {
+    settings: CheckboxStyleSettings;
+
     // Define available checkbox styles
-    private checkboxStyles = [
-        { symbol: ' ', description: 'To-do' },
-        { symbol: '/', description: 'Incomplete' },
-        { symbol: 'x', description: 'Done' },
-        { symbol: '-', description: 'Cancelled' },
+    public checkboxStyles = [
+        { symbol: ' ', description: 'To-do', enabled: true },
+        { symbol: '/', description: 'Incomplete', enabled: true },
+        { symbol: 'x', description: 'Done', enabled: true },
+        { symbol: '-', description: 'Cancelled', enabled: true },
+        { symbol: '>', description: 'Forwarded', enabled: false },
+        { symbol: '<', description: 'Scheduling', enabled: false },
+        { symbol: '?', description: 'Question', enabled: false },
+        { symbol: '!', description: 'Important', enabled: false },
+        { symbol: '*', description: 'Star', enabled: false },
+        { symbol: '"', description: 'Quote', enabled: false },
+        { symbol: 'l', description: 'Location', enabled: false },
+        { symbol: 'b', description: 'Bookmark', enabled: false },
+        { symbol: 'i', description: 'Information', enabled: false },
+        { symbol: 'S', description: 'Savings', enabled: false },
+        { symbol: 'I', description: 'Idea', enabled: false },
+        { symbol: 'p', description: 'Pro', enabled: false },
+        { symbol: 'c', description: 'Con', enabled: false },
+        { symbol: 'f', description: 'Fire', enabled: false },
+        { symbol: 'k', description: 'Key', enabled: false },
+        { symbol: 'w', description: 'Win', enabled: false },
+        { symbol: 'u', description: 'Up', enabled: false },
+        { symbol: 'd', description: 'Down', enabled: false },
     ];
     private longPressDuration = 500; // Duration in ms for long press to trigger menu
     private menuTimeoutDuration = 2000; // Duration in ms before menu auto-dismisses
@@ -23,6 +76,13 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 
     // Plugin initialization
     async onload() {
+        // Load settings
+        await this.loadSettings();
+        // Initialize enabled states based on settings
+        this.checkboxStyles.forEach(style => {
+            style.enabled = this.settings.styles[style.symbol];
+        });
+
         // Register event listeners for mouse interactions
         this.registerDomEvent(document, 'mousedown', this.handleMouseDown.bind(this));
         this.registerDomEvent(document, 'mouseup', this.handleMouseUp.bind(this));
@@ -35,6 +95,19 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
                 }
             })
         );
+
+        // Add settings tab
+        this.addSettingTab(new CheckboxStyleSettingTab(this.app, this));
+    }
+
+    // Save settings
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
+    // Load settings
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     }
 
     // State variables for long press detection
@@ -195,8 +268,16 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             padding: '5px 0',
         });
 
-        // Generate markdown string for checkbox styles
-        const markdown = this.checkboxStyles.map(style => `- [${style.symbol}] `).join('\n');
+        // Filter enabled styles
+        const enabledStyles = this.checkboxStyles.filter(style => style.enabled);
+        if (enabledStyles.length === 0) {
+            console.warn('No enabled checkbox styles available');
+            this.hideMenu();
+            return;
+        }
+
+        // Generate markdown string for enabled checkbox styles
+        const markdown = enabledStyles.map(style => `- [${style.symbol}] `).join('\n');
 
         // Render markdown directly into the menu container
         const renderChild = new MarkdownRenderChild(this.menuElement);
@@ -259,7 +340,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 
             // Add tooltip
             const tooltip = document.createElement('span');
-            tooltip.textContent = this.checkboxStyles[index].description;
+            tooltip.textContent = enabledStyles[index].description;
             tooltip.className = 'tooltip';
             tooltip.style.cssText = `
                 visibility: hidden;
@@ -304,7 +385,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 
             // Add click event to apply style
             li.addEventListener('mouseup', () => {
-                const symbol = this.checkboxStyles[index].symbol;
+                const symbol = enabledStyles[index].symbol;
                 console.log(`Applying symbol '${symbol}'`);
                 this.applyCheckboxStyle(editor, pos, symbol);
                 this.hideMenu();
@@ -320,7 +401,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         }
         const editorRect = container.getBoundingClientRect();
         const menuWidth = 30; // Updated to match new menu width
-        const menuHeight = this.checkboxStyles.length * 32 + 8; // Approximate height
+        const menuHeight = enabledStyles.length * 32 + 8; // Approximate height
         let left = checkboxRect.left - editorRect.left - menuWidth - 5;
         if (left < 0) {
             left = checkboxRect.right - editorRect.left + 5; // Position to the right if no space on left
@@ -411,7 +492,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 
     // Check if a line is a valid checkbox line
     private isCheckboxLine(line: string): boolean {
-        const isValid = /^\s*-\s*\[[ \/\-x]\]\s*(.*)?$/.test(line);
+        const isValid = /^\s*-\s*\[[ \/\-x><?!*\"lbiSIpcfkwud]\]\s*(.*)?$/.test(line);
         console.log(`Checking line: "${line}" -> Valid: ${isValid}`);
         return isValid;
     }
@@ -444,5 +525,113 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         console.log(`Replacing symbol at line ${lineNumber}, ch ${startIndex}-${endIndex} with '${symbol}'`);
         editor.replaceRange(symbol, { line: lineNumber, ch: startIndex }, { line: lineNumber, ch: endIndex });
         console.log('Symbol replacement executed');
+    }
+}
+
+// Settings tab
+class CheckboxStyleSettingTab extends PluginSettingTab {
+    plugin: CheckboxStyleMenuPlugin;
+    private styleEl: HTMLStyleElement | null = null;
+
+    constructor(app: App, plugin: CheckboxStyleMenuPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        containerEl.createEl('h2', { text: 'Checkbox Style Menu Settings' });
+
+        // Create a container for all toggles
+        const toggleContainer = containerEl.createEl('div', {
+            cls: 'checkbox-style-toggles',
+        });
+
+        // Add custom CSS to remove dividing lines and adjust styling
+        this.styleEl = document.createElement('style');
+        this.styleEl.textContent = `
+            .checkbox-style-toggles .setting-item {
+                border-top: none !important;
+                padding: 0px 0;
+                display: flex;
+                align-items: center;
+            }
+            .checkbox-style-toggles .setting-item-name {
+                margin-bottom: 0px;
+                display: flex;
+                align-items: center;
+                gap: 0px;
+            }
+            .checkbox-style-toggles .markdown-preview-view {
+                padding: 0;
+                margin: 0;
+                display: inline-flex;
+                align-items: center;
+                line-height: normal;
+            }
+            .checkbox-style-toggles .markdown-preview-view ul,
+            .checkbox-style-toggles .markdown-preview-view li {
+                margin: 0;
+                padding: 0;
+                display: inline-flex;
+                align-items: center;
+                line-height: normal;
+            }
+            .checkbox-style-toggles .task-list-item-checkbox {
+                margin: 0 8px 0 0;
+                vertical-align: middle;
+            }
+        `;
+        document.head.appendChild(this.styleEl);
+
+        // Create a toggle for each checkbox style
+        this.plugin.checkboxStyles.forEach(style => {
+            const setting = new Setting(toggleContainer);
+            const fragment = document.createDocumentFragment();
+            const nameContainer = document.createElement('div');
+            nameContainer.className = 'setting-item-name markdown-source-view mod-cm6 cm-s-obsidian'; // Mimic editor context
+
+            // Render the checkbox and description as a single markdown string
+            const markdown = `- [${style.symbol}] ${style.description}`;
+            const renderChild = new MarkdownRenderChild(nameContainer);
+            this.plugin.addChild(renderChild);
+            MarkdownRenderer.render(
+                this.app,
+                markdown,
+                nameContainer,
+                '', // sourcePath
+                renderChild
+            );
+
+            // Ensure the rendered elements have editor-like classes
+            const previewView = nameContainer.querySelector('.markdown-preview-view');
+            if (previewView) {
+                previewView.classList.add('cm-s-obsidian', 'mod-cm6', 'markdown-rendered');
+            }
+
+            // Append nameContainer to fragment
+            fragment.appendChild(nameContainer);
+
+            setting.setName(fragment);
+            setting.addToggle(toggle => toggle
+                .setValue(this.plugin.settings.styles[style.symbol])
+                .onChange(async (value) => {
+                    this.plugin.settings.styles[style.symbol] = value;
+                    style.enabled = value;
+                    await this.plugin.saveSettings();
+                    console.log(`Toggled ${style.description} (${style.symbol}) to ${value}`);
+                }));
+        });
+    }
+
+    hide(): void {
+        // Cleanup style element when settings tab is closed
+        if (this.styleEl) {
+            this.styleEl.remove();
+            this.styleEl = null;
+        }
+        super.hide();
     }
 }
