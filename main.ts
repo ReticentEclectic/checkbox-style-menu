@@ -67,7 +67,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         { symbol: 'u', description: 'Up', enabled: false },
         { symbol: 'd', description: 'Down', enabled: false },
     ];
-    private longPressDuration = 500; // Duration in ms for long press to trigger menu
+    private longPressDuration = 350; // Duration in ms for long press to trigger menu
     private menuTimeoutDuration = 2000; // Duration in ms before menu auto-dismisses
     private menuElement: HTMLElement | null = null; // Menu container element
     private overlayElement: HTMLElement | null = null; // Overlay to block checkbox interactions
@@ -504,7 +504,9 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             return;
         }
 
-        const line = editor.cm.state.doc.lineAt(pos);
+        const view = editor.cm;
+        const state = view.state;
+        const line = state.doc.lineAt(pos);
         const lineNumber = line.number - 1;
         const text = line.text;
 
@@ -513,7 +515,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             return;
         }
 
-        // Replace the checkbox symbol
+        // Find the checkbox symbol position
         const match = text.match(/-\s*\[(.)\]/);
         if (!match) {
             console.error('No checkbox pattern found in line');
@@ -521,10 +523,15 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         }
 
         const startIndex = match.index! + match[0].indexOf('[') + 1;
-        const endIndex = startIndex + 1;
-        console.log(`Replacing symbol at line ${lineNumber}, ch ${startIndex}-${endIndex} with '${symbol}'`);
-        editor.replaceRange(symbol, { line: lineNumber, ch: startIndex }, { line: lineNumber, ch: endIndex });
-        console.log('Symbol replacement executed');
+        const from = line.from + startIndex;
+        const to = from + 1;
+
+        // Dispatch a transaction with changes only, preserving selection
+        view.dispatch({
+            changes: { from, to, insert: symbol },
+        });
+
+        console.log(`Symbol replaced at line ${lineNumber}, ch ${startIndex} with '${symbol}', scroll preserved`);
     }
 }
 
@@ -549,38 +556,15 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
             cls: 'checkbox-style-toggles',
         });
 
-        // Add custom CSS to remove dividing lines and adjust styling
+        // Add custom CSS to adjust styling
         this.styleEl = document.createElement('style');
         this.styleEl.textContent = `
             .checkbox-style-toggles .setting-item {
-                border-top: none !important;
                 padding: 0px 0;
                 display: flex;
-                align-items: center;
-            }
-            .checkbox-style-toggles .setting-item-name {
-                margin-bottom: 0px;
-                display: flex;
-                align-items: center;
-                gap: 0px;
-            }
-            .checkbox-style-toggles .markdown-preview-view {
-                padding: 0;
-                margin: 0;
-                display: inline-flex;
-                align-items: center;
-                line-height: normal;
-            }
-            .checkbox-style-toggles .markdown-preview-view ul,
-            .checkbox-style-toggles .markdown-preview-view li {
-                margin: 0;
-                padding: 0;
-                display: inline-flex;
-                align-items: center;
-                line-height: normal;
+                //align-items: center;
             }
             .checkbox-style-toggles .task-list-item-checkbox {
-                margin: 0 8px 0 0;
                 vertical-align: middle;
             }
         `;
