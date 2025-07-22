@@ -2,7 +2,7 @@
 // Obsidian plugin to display a context menu for checkbox styles on long press
 // Uses CodeMirror 6 and Obsidian API to interact with markdown checkboxes
 
-import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting } from 'obsidian';
+import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, WorkspaceLeaf } from 'obsidian';
 import { EditorView } from '@codemirror/view';
 
 // Extend Editor interface to include CodeMirror instance
@@ -66,6 +66,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     public checkboxStyles = checkboxStyles.map(style => ({ ...style, enabled: false }));
     // Style element for settings tab
     private settingsStyleEl: HTMLStyleElement | null = null;
+    // Track listeners per markdown leaf
+    private leafListeners: Map<WorkspaceLeaf, { container: HTMLElement, listeners: Array<{ type: string, handler: (e: MouseEvent) => void }> }> = new Map();
 
     // Duration for long press to trigger menu (ms)
     private longPressDuration = 350;
@@ -79,6 +81,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     private menuTimeout: NodeJS.Timeout | null = null;
     // Store scroll listener for cleanup
     private scrollListener: (() => void) | null = null;
+    // Store closeOnClickOutside listener for cleanup
+    private closeOnClickOutsideListener: ((e: MouseEvent) => void) | null = null;
     // Timer for long press detection
     private timer: NodeJS.Timeout | null = null;
     // Flag for long press detection
@@ -103,17 +107,23 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         document.head.appendChild(this.settingsStyleEl);
         console.log('Settings tab styles appended to document head');
 
-        // Register event listeners for mouse interactions
-        this.registerDomEvent(document, 'mousedown', this.handleMouseDown.bind(this));
-        this.registerDomEvent(document, 'mouseup', this.handleMouseUp.bind(this));
+        // Initialize listeners for existing markdown leaves
+        this.updateLeafListeners();
 
-        // Reset state when active leaf changes, only if no menu or interaction is active
+        // Update listeners on leaf or layout changes
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
                 console.log('Active leaf changed');
+                this.updateLeafListeners();
                 if (!this.timer && !this.menuElement && !this.isLongPress) {
                     this.resetState();
                 }
+            })
+        );
+        this.registerEvent(
+            this.app.workspace.on('layout-change', () => {
+                console.log('Layout changed');
+                this.updateLeafListeners();
             })
         );
 
@@ -125,16 +135,15 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     onunload() {
         // Remove menu and associated listeners
         this.hideMenu();
-        // Remove global document listeners
-        document.removeEventListener('mousedown', this.handleMouseDown);
-        document.removeEventListener('mouseup', this.handleMouseUp);
+        // Remove all leaf listeners
+        this.clearLeafListeners();
         // Remove settings tab styles
         if (this.settingsStyleEl) {
             this.settingsStyleEl.remove();
             this.settingsStyleEl = null;
             console.log('Settings tab styles removed from document head');
         }
-        console.log('Plugin unloaded and global listeners removed');
+        console.log('Plugin unloaded and all listeners removed');
     }
 
     // Save settings to persistent storage
@@ -145,6 +154,62 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     // Load settings from persistent storage
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    // Update listeners for markdown leaves
+    private updateLeafListeners() {
+        // Get all markdown leaves
+        const markdownLeaves = this.app.workspace.getLeavesOfType('markdown');
+        const activeLeaves = new Set<WorkspaceLeaf>(markdownLeaves);
+
+        // Remove listeners for leaves that no longer exist or aren't markdown
+        for (const [leaf] of this.leafListeners) {
+            if (!activeLeaves.has(leaf)) {
+                this.removeLeafListeners(leaf);
+            }
+        }
+
+        // Add listeners for new or existing markdown leaves in source mode
+        for (const leaf of markdownLeaves) {
+            const view = leaf.view;
+            if (view instanceof MarkdownView && view.getMode() === 'source') {
+                const container = view.contentEl.querySelector('.markdown-source-view') as HTMLElement | null;
+                if (container && !this.leafListeners.has(leaf)) {
+                    const listeners = [
+                        { type: 'mousedown', handler: this.handleMouseDown.bind(this) },
+                        { type: 'mouseup', handler: this.handleMouseUp.bind(this) },
+                    ];
+                    listeners.forEach(({ type, handler }) => {
+                        container.addEventListener(type, handler);
+                        console.log(`Added ${type} listener to leaf container`, leaf);
+                    });
+                    this.leafListeners.set(leaf, { container, listeners });
+                }
+            }
+        }
+        console.log(`Active listeners: ${this.leafListeners.size} leaves`);
+    }
+
+    // Remove listeners for a specific leaf
+    private removeLeafListeners(leaf: WorkspaceLeaf) {
+        const entry = this.leafListeners.get(leaf);
+        if (entry) {
+            const { container, listeners } = entry;
+            listeners.forEach(({ type, handler }) => {
+                container.removeEventListener(type, handler);
+                console.log(`Removed ${type} listener from leaf container`, leaf);
+            });
+            this.leafListeners.delete(leaf);
+        }
+    }
+
+    // Clear all leaf listeners
+    private clearLeafListeners() {
+        for (const leaf of this.leafListeners.keys()) {
+            this.removeLeafListeners(leaf);
+        }
+        this.leafListeners.clear();
+        console.log('All leaf listeners cleared');
     }
 
     // Clear all timers (long press and menu timeout)
@@ -275,16 +340,6 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             zIndex: '998', // Below menu (zIndex: 1000)
             background: 'rgba(255, 0, 0, 0.5)', // Visible for testing
         });
-        this.overlayElement.addEventListener('mouseup', (e) => {
-            console.log('Blocking mouseup on checkbox overlay');
-            e.preventDefault();
-            e.stopPropagation(); // Prevent global mouseup handler
-        });
-        this.overlayElement.addEventListener('click', (e) => {
-            console.log('Blocking click on checkbox overlay');
-            e.preventDefault();
-            e.stopPropagation();
-        });
         this.overlayElement.addEventListener('mouseleave', () => {
             console.log('Cursor left checkbox overlay, starting dismiss timer');
             this.startDismissTimeout();
@@ -376,7 +431,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             });
         }
 
-        // Make rendered checkboxes clickable and add tooltips
+        // Add tooltips and prepare list items for event delegation
         const listItems = this.menuElement.querySelectorAll('li');
         listItems.forEach((li, index) => {
             Object.assign(li.style, {
@@ -421,30 +476,43 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             `;
             li.appendChild(tooltip);
 
-            // Add hover effects and tooltip behavior for individual items
-            li.addEventListener('mouseenter', () => {
+            // Add data attribute for identifying item in event delegation
+            li.setAttribute('data-style-index', index.toString());
+        });
+
+        // Use event delegation for menu item interactions
+        this.menuElement.addEventListener('mouseenter', (e) => {
+            const li = (e.target as HTMLElement).closest('li');
+            if (li) {
                 li.style.background = 'var(--background-modifier-hover)';
+                const tooltip = li.querySelector('.tooltip') as HTMLElement;
                 setTimeout(() => {
                     if (li.matches(':hover')) {
                         tooltip.style.visibility = 'visible';
                         tooltip.style.opacity = '1';
                     }
-                }, 500); // Half-second hover delay for tooltip
-            });
-            li.addEventListener('mouseleave', () => {
+                }, 500);
+            }
+        }, true); // Use capture to ensure parent handles before children
+        this.menuElement.addEventListener('mouseleave', (e) => {
+            const li = (e.target as HTMLElement).closest('li');
+            if (li) {
                 li.style.background = '';
+                const tooltip = li.querySelector('.tooltip') as HTMLElement;
                 tooltip.style.visibility = 'hidden';
                 tooltip.style.opacity = '0';
-            });
-
-            // Add click event to apply style using stored editor and pos
-            li.addEventListener('mouseup', (e) => {
-                e.stopPropagation(); // Prevent triggering global mouseup or mousedown
+            }
+        }, true);
+        this.menuElement.addEventListener('mouseup', (e) => {
+            const li = (e.target as HTMLElement).closest('li');
+            if (li) {
+                e.stopPropagation();
+                const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
                 const symbol = enabledStyles[index].symbol;
                 console.log(`Applying symbol '${symbol}'`);
                 this.applyCheckboxStyle(editor, pos, symbol);
                 this.hideMenu();
-            });
+            }
         });
 
         // Position the menu relative to the checkbox
@@ -454,29 +522,41 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             this.clearTimers();
             return;
         }
-        const editorRect = container.getBoundingClientRect();
 
-        // Temporarily append menu to measure dimensions
+        // Get the actual CodeMirror editor element for proper positioning
+        const cmEditor = container.querySelector('.cm-editor') as HTMLElement;
+        if (!cmEditor) {
+            console.error('CodeMirror editor element not found');
+            this.clearTimers();
+            return;
+        }
+        const cmEditorRect = cmEditor.getBoundingClientRect();
+
+        // Temporarily append menu to the CM editor container for measurement
         Object.assign(this.menuElement.style, {
             visibility: 'hidden',
             left: '0px',
             top: '0px',
         });
-        container.appendChild(this.menuElement);
-        const menuWidth = this.menuElement.offsetWidth || 30; // Fallback to 30px
-        const menuHeight = this.menuElement.offsetHeight || 40; // Fallback to approximate minimum
-        this.menuElement.style.visibility = ''; // Restore visibility
+        cmEditor.appendChild(this.menuElement);
+        const menuWidth = this.menuElement.offsetWidth || 30;
+        const menuHeight = this.menuElement.offsetHeight || 40;
+        this.menuElement.style.visibility = ''; // Restore visibilty
 
-        // Calculate position
-        let left = checkboxRect.left - editorRect.left - menuWidth - 5;
+        // Calculate position relative to the CodeMirror editor
+        let left = checkboxRect.left - cmEditorRect.left - menuWidth - 5;
         if (left < 0) {
-            left = checkboxRect.right - editorRect.left + 5; // Position to the right if no space on left
+            left = checkboxRect.right - cmEditorRect.left + 5; // Position to the right if no space on left
         }
-        let top = checkboxRect.top - editorRect.top;
+
+        // Calculate vertical offset to align first menu item with target checkbox
+        // Account for: menu padding top (4px) + first list item margin top (2px) + first list item padding top (2px)
+        const menuTopOffset = 4 + 2 + 2; // Total: 8px
+        let top = checkboxRect.top - cmEditorRect.top - menuTopOffset;
 
         // Adjust vertical position if menu exceeds editor bounds
-        if (top + menuHeight > editorRect.height) {
-            top = editorRect.height - menuHeight;
+        if (top + menuHeight > cmEditorRect.height) {
+            top = cmEditorRect.height - menuHeight;
         }
         if (top < 0) {
             top = 0;
@@ -486,6 +566,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             left: `${left}px`,
             top: `${top}px`,
         });
+
+        console.log(`Menu positioned relative to cm-editor with width: ${menuWidth}px, height: ${menuHeight}px at left: ${left}px, top: ${top}px`);
 
         // Add scroll event listener to CodeMirror's scrollDOM only when menu is open
         if (editor.cm && editor.cm.scrollDOM) {
@@ -498,14 +580,13 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         }
 
         // Add listener for clicks outside the menu to close it
-        const closeOnClickOutside = (e: MouseEvent) => {
+        this.closeOnClickOutsideListener = (e: MouseEvent) => {
             if (this.menuElement && !this.menuElement.contains(e.target as Node)) {
                 console.log('Mouse down outside menu detected, hiding menu immediately');
                 this.hideMenu();
-                document.removeEventListener('mousedown', closeOnClickOutside);
             }
         };
-        document.addEventListener('mousedown', closeOnClickOutside);
+        document.addEventListener('mousedown', this.closeOnClickOutsideListener);
 
         console.log(`Menu positioned with width: ${menuWidth}px, height: ${menuHeight}px at left: ${left}px, top: ${top}px`);
     }
@@ -538,6 +619,12 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
                 console.log('Scroll listener removed from CodeMirror scrollDOM');
             }
             this.scrollListener = null;
+        }
+        // Remove closeOnClickOutside listener if it exists
+        if (this.closeOnClickOutsideListener) {
+            document.removeEventListener('mousedown', this.closeOnClickOutsideListener);
+            this.closeOnClickOutsideListener = null;
+            console.log('closeOnClickOutside listener removed from document');
         }
         this.clearTimers();
         console.log('Menu and overlay removed');
