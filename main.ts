@@ -2,7 +2,7 @@
 // Obsidian plugin to display a context menu for checkbox styles on long press
 // Uses CodeMirror 6 widgets for native integration
 
-import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, WorkspaceLeaf } from 'obsidian';
+import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, WorkspaceLeaf, setTooltip } from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
 import { StateField, StateEffect, EditorState } from '@codemirror/state';
 
@@ -262,7 +262,7 @@ class CheckboxStyleWidget extends WidgetType {
             `;
         }
 
-        // Style list items and add tooltips
+        // Style list items and add Obsidian-style tooltips with positioning
         const listItems = menu.querySelectorAll('li');
         listItems.forEach((li, index) => {
             li.style.cssText = `
@@ -283,27 +283,13 @@ class CheckboxStyleWidget extends WidgetType {
                 checkbox.style.margin = '0 auto';
             }
 
-            // Add tooltip
-            const tooltip = document.createElement('span');
-            tooltip.textContent = enabledStyles[index].description;
-            tooltip.className = 'tooltip';
-            tooltip.style.cssText = `
-                visibility: hidden;
-                background: var(--background-secondary);
-                color: var(--text-normal);
-                padding: 4px 8px;
-                border-radius: 4px;
-                position: absolute;
-                z-index: 1001;
-                left: calc(100% + 8px);
-                top: 50%;
-                transform: translateY(-50%);
-                opacity: 0;
-                transition: opacity 0.2s;
-                white-space: nowrap;
-                text-align: center;
-            `;
-            li.appendChild(tooltip);
+            // Use Obsidian's setTooltip function with positioning options
+            // This gives us native styling with better control over positioning
+            this.plugin.app.workspace.onLayoutReady(() => {
+                setTooltip(li as HTMLElement, enabledStyles[index].description, {
+                    placement: 'right'
+                });
+            });
 
             // Add data attribute for event delegation
             li.setAttribute('data-style-index', index.toString());
@@ -313,19 +299,14 @@ class CheckboxStyleWidget extends WidgetType {
     private setupEventListeners(view: EditorView, menu: HTMLElement) {
         let hoverTimeout: NodeJS.Timeout | null = null;
 
-        // Mouse enter/leave for hover effects and tooltips
+        // Mouse enter/leave for hover effects - use Obsidian's native tooltip system
         menu.addEventListener('mouseenter', (e) => {
             const li = (e.target as HTMLElement).closest('li');
             if (li) {
                 li.style.background = 'var(--background-modifier-hover)';
-                const tooltip = li.querySelector('.tooltip') as HTMLElement;
-                if (hoverTimeout) clearTimeout(hoverTimeout);
-                hoverTimeout = setTimeout(() => {
-                    if (li.matches(':hover')) {
-                        tooltip.style.visibility = 'visible';
-                        tooltip.style.opacity = '1';
-                    }
-                }, 500);
+                
+                // Obsidian will handle the tooltip display automatically via aria-label
+                // No need to manually show/hide custom tooltips
             }
         }, true);
 
@@ -333,13 +314,6 @@ class CheckboxStyleWidget extends WidgetType {
             const li = (e.target as HTMLElement).closest('li');
             if (li) {
                 li.style.background = '';
-                const tooltip = li.querySelector('.tooltip') as HTMLElement;
-                tooltip.style.visibility = 'hidden';
-                tooltip.style.opacity = '0';
-                if (hoverTimeout) {
-                    clearTimeout(hoverTimeout);
-                    hoverTimeout = null;
-                }
             }
         }, true);
 
@@ -501,6 +475,8 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
         // Remove any existing overlay first
         this.removeOverlay();
         
+        // Create an invisible overlay that just handles event prevention
+        // but allows scrolling to pass through
         const checkboxRect = checkbox.getBoundingClientRect();
         this.overlayElement = document.createElement('div');
         this.overlayElement.className = 'checkbox-overlay';
@@ -511,32 +487,47 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
             width: `${checkboxRect.width}px`,
             height: `${checkboxRect.height}px`,
             zIndex: '999',
-            background: 'rgba(255, 0, 0, 0.5)', // Visible for testing
+            background: 'transparent', // Make it invisible
             cursor: 'default',
-            pointerEvents: 'all'
+            pointerEvents: 'auto' // Allow pointer events on the overlay
         });
         
-        // Prevent any clicks on the overlay
-        this.overlayElement.addEventListener('click', (e) => {
+        // Add event listeners to prevent checkbox interactions
+        const preventCheckboxEvent = (e: Event) => {
+            // Prevent the event from reaching the checkbox underneath
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
+            console.log(`Checkbox ${e.type} prevented by overlay`);
+            return false;
+        };
+        
+        // Prevent click events that would change the checkbox
+        this.overlayElement.addEventListener('click', preventCheckboxEvent);
+        this.overlayElement.addEventListener('mouseup', preventCheckboxEvent);
+        this.overlayElement.addEventListener('mousedown', preventCheckboxEvent);
+        
+        // Key: Allow wheel events to pass through by not preventing them
+        // and by setting pointer-events appropriately
+        this.overlayElement.addEventListener('wheel', (e) => {
+            // Let wheel events pass through to the document underneath
+            // by temporarily disabling pointer events on the overlay
+            this.overlayElement!.style.pointerEvents = 'none';
+            
+            // Re-enable pointer events after a brief moment
+            setTimeout(() => {
+                if (this.overlayElement) {
+                    this.overlayElement.style.pointerEvents = 'auto';
+                }
+            }, 10);
         });
         
-        this.overlayElement.addEventListener('mouseup', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-        });
-        
-        this.overlayElement.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-        });
+        // Add subtle visual feedback to the checkbox (not the overlay)
+        checkbox.style.opacity = '0.8';
+        (checkbox as any).__overlayActive = true;
         
         document.body.appendChild(this.overlayElement);
-        console.log('Overlay created to prevent checkbox interaction');
+        console.log('Overlay created to prevent checkbox interaction while allowing scroll');
     }
     
     private removeOverlay() {
