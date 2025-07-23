@@ -123,6 +123,43 @@ class CheckboxStyleWidget extends WidgetType {
         }
     }
 
+    private positionMenu(view: EditorView, container: HTMLElement, menu: HTMLElement) {
+        const line = view.state.doc.lineAt(this.linePos);
+        const lineDOM = view.domAtPos(line.from);
+        
+        // Find the checkbox within the line
+        const lineElement = lineDOM.node.nodeType === Node.ELEMENT_NODE 
+            ? (lineDOM.node as HTMLElement).closest('.cm-line')
+            : lineDOM.node.parentElement?.closest('.cm-line');
+        
+        const checkbox = lineElement?.querySelector('.task-list-item-checkbox') as HTMLElement;
+        
+        if (!checkbox || !lineElement) {
+            // Fallback to left positioning
+            container.style.cssText += 'transform: translateX(-100%); margin-left: -8px;';
+            return;
+        }
+        
+        // Calculate positions relative to the line
+        const checkboxRect = checkbox.getBoundingClientRect();
+        const lineRect = lineElement.getBoundingClientRect();
+        const editorRect = view.scrollDOM.getBoundingClientRect();
+        
+        const checkboxLeft = checkboxRect.left - lineRect.left;
+        const menuWidth = menu.offsetWidth;
+        const availableLeft = checkboxRect.left - editorRect.left;
+        const availableRight = editorRect.right - checkboxRect.right;
+        
+        // Simple decision: use right if left doesn't have enough space
+        const useRightSide = menuWidth > availableLeft - 10 && availableRight > menuWidth + 10;
+        
+        if (useRightSide) {
+            container.style.cssText += `left: ${checkboxLeft + checkboxRect.width + 8}px;`;
+        } else {
+            container.style.cssText += `left: ${checkboxLeft - 8}px; transform: translateX(-100%);`;
+        }
+    }
+
     toDOM(view: EditorView): HTMLElement {
         const container = document.createElement('div');
         container.className = 'checkbox-style-menu-widget';
@@ -135,8 +172,6 @@ class CheckboxStyleWidget extends WidgetType {
             top: -3px;
             left: 0;
             pointer-events: none;
-            transform: translateX(-100%);
-            margin-left: -4px;
         `;
 
         const menu = document.createElement('div');
@@ -152,13 +187,24 @@ class CheckboxStyleWidget extends WidgetType {
             align-items: center;
             padding: 4px 3px;
             pointer-events: auto;
+            visibility: hidden; /* Hide initially until positioned */
         `;
 
         this.element = menu;
+        
+        // Render content and setup event listeners first
         this.renderMenuContent(view, menu);
         this.setupEventListeners(view, menu);
-
+        
         container.appendChild(menu);
+        
+        // Position the menu after it's been added to DOM and rendered
+        // Use requestAnimationFrame to ensure the browser has laid out the menu
+        requestAnimationFrame(() => {
+            this.positionMenu(view, container, menu);
+            menu.style.visibility = 'visible'; // Show after positioning
+        });
+        
         return container;
     }
 
