@@ -131,11 +131,12 @@ class CheckboxStyleWidget extends WidgetType {
             z-index: 1000;
             margin: 0;
             display: flex;
-            justify-content: flex-end;
-            top: -3px; // Adjust this value to fine-tune vertical alignment
-            right: 100%;
+            justify-content: flex-start;
+            top: -3px;
+            left: 0;
             pointer-events: none;
-            margin-right: 3px; // Adjust this to fine-tine spacing from the checkbox
+            transform: translateX(-100%);
+            margin-left: -4px;
         `;
 
         const menu = document.createElement('div');
