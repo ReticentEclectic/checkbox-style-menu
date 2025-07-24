@@ -14,6 +14,7 @@ interface CodeMirrorEditor extends Editor {
 // Define settings interface for checkbox styles
 interface CheckboxStyleSettings {
     styles: { [symbol: string]: boolean };
+    longPressDuration: number;
 }
 
 // Define checkbox styles as the single source of truth
@@ -47,6 +48,7 @@ const DEFAULT_SETTINGS: CheckboxStyleSettings = {
     styles: Object.fromEntries(
         checkboxStyles.map(style => [style.symbol, [' ', '/', 'x', '-'].includes(style.symbol)])
     ),
+    longPressDuration: 350,
 };
 
 // Define static CSS for settings tab
@@ -455,7 +457,6 @@ const pluginInstanceField = StateField.define<CheckboxStyleMenuPlugin>({
 
 // View plugin to handle mouse events
 const checkboxViewPlugin = ViewPlugin.fromClass(class {
-    private longPressDuration = 350;
     private timer: NodeJS.Timeout | null = null;
     private isLongPress = false;
     private lastTarget: HTMLElement | null = null;
@@ -569,10 +570,13 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
                 return;
             }
 
+            // Get the configurable long press duration from plugin settings
+            const longPressDuration = plugin.settings.longPressDuration;
+
             // Set timer for long press
             this.timer = setTimeout(() => {
                 this.isLongPress = true;
-                console.log('Long press detected, showing widget and creating overlay');
+                console.log(`Long press detected after ${longPressDuration}ms, showing widget and creating overlay`);
                 
                 // Create overlay to prevent checkbox interaction
                 if (this.lastTarget) {
@@ -590,7 +594,7 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
                 });
                 
                 event.preventDefault();
-            }, this.longPressDuration);
+            }, longPressDuration);
         }
     };
 
@@ -688,6 +692,52 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         containerEl.createEl('h2', { text: 'Checkbox Style Menu Settings' });
+
+        // Add long press duration setting
+        const durationSetting = new Setting(containerEl)
+            .setName('Long press duration')
+            .setDesc('How long to hold down the mouse button on a checkbox before the style menu appears (in milliseconds)');
+        
+        let sliderComponent: any;
+        let textComponent: any;
+        
+        durationSetting
+            .addSlider(slider => {
+                sliderComponent = slider;
+                return slider
+                    .setLimits(100, 1000, 50)
+                    .setValue(this.plugin.settings.longPressDuration)
+                    .setDynamicTooltip()
+                    .onChange(async (value) => {
+                        this.plugin.settings.longPressDuration = value;
+                        await this.plugin.saveSettings();
+                        // Update text field to match slider
+                        textComponent.setValue(value.toString());
+                        console.log(`Long press duration changed to ${value}ms via slider`);
+                    });
+            })
+            .addText(text => {
+                textComponent = text;
+                return text
+                    .setPlaceholder('350')
+                    .setValue(this.plugin.settings.longPressDuration.toString())
+                    .onChange(async (value) => {
+                        const numValue = parseInt(value);
+                        if (!isNaN(numValue) && numValue >= 100 && numValue <= 1000) {
+                            this.plugin.settings.longPressDuration = numValue;
+                            await this.plugin.saveSettings();
+                            // Update slider to match text field
+                            sliderComponent.setValue(numValue);
+                            console.log(`Long press duration changed to ${numValue}ms via text field`);
+                        }
+                    });
+            });
+
+        containerEl.createEl('h3', { text: 'Checkbox Styles' });
+        containerEl.createEl('p', { 
+            text: 'Choose which checkbox styles to show in the menu:', 
+            cls: 'setting-item-description' 
+        });
 
         // Create a container for all toggles
         const toggleContainer = containerEl.createEl('div', {
