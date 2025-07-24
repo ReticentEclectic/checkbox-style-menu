@@ -304,9 +304,6 @@ class CheckboxStyleWidget extends WidgetType {
             const li = (e.target as HTMLElement).closest('li');
             if (li) {
                 li.style.background = 'var(--background-modifier-hover)';
-                
-                // Obsidian will handle the tooltip display automatically via aria-label
-                // No need to manually show/hide custom tooltips
             }
         }, true);
 
@@ -362,6 +359,14 @@ class CheckboxStyleWidget extends WidgetType {
                 if (this.overlayHandler) {
                     this.overlayHandler();
                 }
+            });
+
+            // Add click handler to dismiss menu when overlay is clicked
+            this.overlayElement.addEventListener('click', (e) => {
+                console.log('Overlay clicked, dismissing widget menu');
+                e.preventDefault();
+                e.stopPropagation();
+                this.hideWidget(view);
             });
         }
 
@@ -503,7 +508,6 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
         };
         
         // Prevent click events that would change the checkbox
-        this.overlayElement.addEventListener('click', preventCheckboxEvent);
         this.overlayElement.addEventListener('mouseup', preventCheckboxEvent);
         this.overlayElement.addEventListener('mousedown', preventCheckboxEvent);
         
@@ -521,10 +525,6 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
                 }
             }, 10);
         });
-        
-        // Add subtle visual feedback to the checkbox (not the overlay)
-        checkbox.style.opacity = '0.8';
-        (checkbox as any).__overlayActive = true;
         
         document.body.appendChild(this.overlayElement);
         console.log('Overlay created to prevent checkbox interaction while allowing scroll');
