@@ -1,25 +1,32 @@
-// main.ts
-// Obsidian plugin to display a context menu for checkbox styles on long press
-// Uses CodeMirror 6 widgets for native integration
+//Main.ts for Checkbox Style Menu
 
-import { Plugin, MarkdownView, Editor, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, WorkspaceLeaf, setTooltip, Platform } from 'obsidian';
-import { EditorView, Decoration, DecorationSet, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
-import { StateField, StateEffect, EditorState } from '@codemirror/state';
+import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform } from 'obsidian';
+import { EditorView, Decoration, DecorationSet, ViewPlugin, WidgetType } from '@codemirror/view';
+import { StateField, StateEffect } from '@codemirror/state';
 
-// Extend Editor interface to include CodeMirror instance
-interface CodeMirrorEditor extends Editor {
-    cm?: EditorView;
-}
 
-// Define settings interface for checkbox styles
+// Plugin settings interface for checkbox style configuration
 interface CheckboxStyleSettings {
-    styles: { [symbol: string]: boolean };
-    longPressDuration: number;
-    touchLongPressDuration: number; // Separate duration for mobile
-    enableHapticFeedback: boolean;
+    styles: { [symbol: string]: boolean };  // Which checkbox styles are enabled
+    longPressDuration: number;              // Desktop long press duration (ms)
+    touchLongPressDuration: number;         // Mobile long press duration (ms)
+    enableHapticFeedback: boolean;          // Mobile haptic feedback setting
 }
 
-// Define checkbox styles as the single source of truth
+// Consolidated widget state
+interface WidgetState {
+    isVisible: boolean;
+    position: number;
+    timer: NodeJS.Timeout | null;
+    lastTarget: HTMLElement | null;
+    touchStart?: { x: number; y: number; time: number };
+}
+
+/**
+ * CONSTANTS AND CONFIGURATION
+ */
+
+// Master list of available checkbox styles - single source of truth
 const CHECKBOX_STYLES = [
     { symbol: ' ', description: 'To-do' },
     { symbol: '/', description: 'Incomplete' },
@@ -45,67 +52,198 @@ const CHECKBOX_STYLES = [
     { symbol: 'd', description: 'Down' },
 ] as const;
 
-// Pre-compile regex for better performance
-const CHECKBOX_REGEX = /^\s*-\s*\[(.)\]\s*(.*)?$/;
-const CHECKBOX_SYMBOL_REGEX = /-\s*\[(.)\]/;
+// Pre-compiled regex patterns for performance
+const CHECKBOX_REGEX = /^\s*-\s*\[(.)\]\s*(.*)?$/;        // Matches entire checkbox line
+const CHECKBOX_SYMBOL_REGEX = /-\s*\[(.)\]/;              // Matches just the checkbox part
 
-// Generate default settings from checkboxStyles
+// Default plugin settings with validation
 const DEFAULT_SETTINGS: CheckboxStyleSettings = {
     styles: Object.fromEntries(
         CHECKBOX_STYLES.map(style => [style.symbol, [' ', '/', 'x', '-'].includes(style.symbol)])
     ),
-    longPressDuration: 350,
-    touchLongPressDuration: 500, // Longer for touch devices
-    enableHapticFeedback: true,
+    longPressDuration: 350,         // Desktop long press (ms)
+    touchLongPressDuration: 500,    // Mobile long press (ms)
+    enableHapticFeedback: true,     // Mobile haptic feedback
 };
 
-// Define static CSS for settings tab with CSS custom properties for better theming
+// CSS styles for the menu widget and settings panel
 const SETTINGS_STYLES = `
-    .checkbox-style-toggles .setting-item {
-        padding: 0px 0;
-        display: flex;
-        align-items: center;
-    }
-    .checkbox-style-toggles .task-list-item-checkbox {
-        vertical-align: middle;
-    }
+    /* Menu widget CSS custom properties for theming */
     .checkbox-style-menu-widget {
         --menu-bg: var(--background-primary);
         --menu-border: var(--background-modifier-border);
         --menu-shadow: var(--background-modifier-box-shadow);
         --menu-hover: var(--background-modifier-hover);
     }
+    
+    /* Settings panel styles */
+    .checkbox-style-toggles .setting-item-name ul {
+        margin: 0;
+    }
+    
+    .checkbox-style-toggles .setting-item-name li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: var(--font-text-size);
+    }
+    
+    .checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
+        flex-shrink: 0;
+    }
+    
+    /* Mobile-specific styling */
+    @media (max-width: 768px) {
+        .checkbox-style-toggles .setting-item-name li {
+            font-size: calc(var(--font-text-size) * 1.1);
+        }
+        
+        .checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
+            transform: scale(1.2);
+        }
+    }
 `;
 
-// State effect for showing the widget & overlay cleanup
+/**
+ * CODEMIRROR STATE EFFECTS
+ * Used to communicate with CodeMirror's state management system
+ */
+
+// State effect for showing the widget menu
 const showWidgetEffect = StateEffect.define<{ 
     pos: number; 
     line: number; 
-    overlayHandler?: () => void;
-    overlayElement?: HTMLElement;
 }>({
     map: (val, change) => ({ 
         pos: change.mapPos(val.pos), 
-        line: val.line,
-        overlayHandler: val.overlayHandler,
-        overlayElement: val.overlayElement
+        line: val.line
     })
 });
 
-// State effect for hiding the widget
+// State effect for hiding the widget menu
 const hideWidgetEffect = StateEffect.define<void>();
 
-// Utility functions for better code organization
+/**
+ * PERFORMANCE UTILITIES
+ */
+
+// Simplified DOM cache for expensive calculations only
+class SimpleDOMCache {
+    private static positionCache = new Map<string, { rect: DOMRect; timestamp: number }>();
+    private static readonly CACHE_TTL = 100; // Cache time-to-live in milliseconds
+    
+    /**
+     * Get cached bounding rectangle or calculate and cache new one
+     * @param element - HTML element to get bounds for
+     * @returns Cached or fresh DOMRect
+     */
+    static getCheckboxRect(element: HTMLElement): DOMRect {
+        // Use element's position in DOM as cache key
+        const key = element.dataset.cacheKey || (element.dataset.cacheKey = Math.random().toString());
+        const cached = this.positionCache.get(key);
+        const now = Date.now();
+        
+        if (cached && (now - cached.timestamp) < this.CACHE_TTL) {
+            return cached.rect;
+        }
+        
+        const rect = element.getBoundingClientRect();
+        this.positionCache.set(key, { rect, timestamp: now });
+        return rect;
+    }
+    
+    /**
+     * Clear all cached data
+     */
+    static clearCache() {
+        this.positionCache.clear();
+    }
+    
+    /**
+     * Create a throttled version of a function
+     * @param func - Function to throttle
+     * @param delay - Minimum delay between executions (ms)
+     * @returns Throttled function
+     */
+    static throttle<T extends (...args: any[]) => void>(func: T, delay: number): T {
+        let lastCall = 0;
+        return ((...args: Parameters<T>) => {
+            const now = Date.now();
+            if (now - lastCall >= delay) {
+                lastCall = now;
+                return func(...args);
+            }
+        }) as T;
+    }
+}
+
+// Performance monitoring for development
+class PerformanceTracker {
+    private static enabled = false; // Changed from process.env check since it's not available
+    
+    static time<T>(operation: string, fn: () => T): T {
+        if (!this.enabled) return fn();
+        
+        const start = performance.now();
+        const result = fn();
+        const duration = performance.now() - start;
+        
+        if (duration > 16) { // Longer than one frame
+            console.warn(`Slow operation: ${operation} took ${duration.toFixed(2)}ms`);
+        }
+        
+        return result;
+    }
+}
+
+/**
+ * WIDGET POOL FOR PERFORMANCE
+ * Reuses widget instances to reduce garbage collection
+ */
+class WidgetPool {
+    private static pool: CheckboxStyleWidget[] = [];
+    private static readonly MAX_POOL_SIZE = 3;
+    
+    static get(plugin: CheckboxStyleMenuPlugin, pos: number): CheckboxStyleWidget {
+        const widget = this.pool.pop() || new CheckboxStyleWidget(plugin, pos);
+        widget.reset(pos);
+        return widget;
+    }
+    
+    static release(widget: CheckboxStyleWidget) {
+        if (this.pool.length < this.MAX_POOL_SIZE) {
+            widget.cleanup();
+            this.pool.push(widget);
+        }
+    }
+    
+    static clear() {
+        this.pool.forEach(widget => widget.destroy());
+        this.pool = [];
+    }
+}
+
+/**
+ * OVERLAY MANAGEMENT
+ * Simplified overlay that prevents checkbox clicks during menu display
+ */
 class OverlayManager {
     private overlayElement: HTMLElement | null = null;
+    private abortController: AbortController | null = null;
 
+    /**
+     * Create overlay element positioned over the checkbox
+     * @param checkbox - The checkbox element to overlay
+     * @returns The created overlay element
+     */
     create(checkbox: HTMLElement): HTMLElement {
-        this.remove();
+        this.remove(); // Clean up any existing overlay
         
-        const checkboxRect = checkbox.getBoundingClientRect();
+        const checkboxRect = SimpleDOMCache.getCheckboxRect(checkbox);
         this.overlayElement = document.createElement('div');
         this.overlayElement.className = 'checkbox-overlay';
         
+        // Position overlay exactly over the checkbox
         Object.assign(this.overlayElement.style, {
             position: 'fixed',
             top: `${checkboxRect.top}px`,
@@ -113,262 +251,366 @@ class OverlayManager {
             width: `${checkboxRect.width}px`,
             height: `${checkboxRect.height}px`,
             zIndex: '999',
-            background: 'transparent', // Testing color 'rgba(255, 118, 118, 0.5)',
+            background: 'transparent',
             cursor: 'default',
             pointerEvents: 'auto'
         });
         
-        this.setupEventListeners(checkboxRect);
+        this.setupEventListeners();
         document.body.appendChild(this.overlayElement);
         
         return this.overlayElement;
     }
 
-    private setupEventListeners(checkboxRect: DOMRect, onInteraction?: () => void) {
+    /**
+     * Set up event listeners to prevent checkbox interaction
+     */
+    private setupEventListeners() {
         if (!this.overlayElement) return;
 
-        // Simple approach: just prevent checkbox interactions
-        const preventCheckboxEvent = (e: Event) => {
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
+
+        // Prevent all checkbox click events
+        const preventEvent = (e: Event) => {
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
             return false;
         };
         
-        // Prevent checkbox interactions
+        // Block all interaction events
         ['mouseup', 'mousedown', 'click', 'touchstart', 'touchend'].forEach(eventType => {
-            this.overlayElement!.addEventListener(eventType, preventCheckboxEvent);
+            this.overlayElement!.addEventListener(eventType, preventEvent, { signal });
         });
         
-        // Handle scroll events properly
-        this.overlayElement.addEventListener('wheel', (e) => {
-            this.overlayElement!.style.pointerEvents = 'none';
-            setTimeout(() => {
-                if (this.overlayElement) {
-                    this.overlayElement.style.pointerEvents = 'auto';
-                }
-            }, 10);
-        });
+        // Handle scroll with throttling
+        const throttledWheelHandler = SimpleDOMCache.throttle(() => {
+            if (this.overlayElement) {
+                this.overlayElement.style.pointerEvents = 'none';
+                setTimeout(() => {
+                    if (this.overlayElement) {
+                        this.overlayElement.style.pointerEvents = 'auto';
+                    }
+                }, 10);
+            }
+        }, 16);
 
-        // Mobile-specific touch handling
+        this.overlayElement.addEventListener('wheel', throttledWheelHandler, { signal });
+        
+        // Mobile scroll detection
         if (Platform.isMobile) {
-            const initialY = checkboxRect.top;
-            this.overlayElement.addEventListener('touchmove', (e) => {
-                // Allow scrolling on mobile
-                if (Math.abs(e.touches[0].clientY - initialY) > 10) {
+            let startY = 0;
+            
+            this.overlayElement.addEventListener('touchstart', (e: TouchEvent) => {
+                startY = e.touches[0].clientY;
+            }, { signal });
+            
+            this.overlayElement.addEventListener('touchmove', (e: TouchEvent) => {
+                const currentY = e.touches[0].clientY;
+                if (Math.abs(currentY - startY) > 10) {
                     this.remove();
                 }
-            });
+            }, { signal });
         }
     }
 
+    /**
+     * Remove overlay and clean up all event listeners
+     */
     remove() {
+        if (this.abortController) {
+            this.abortController.abort(); // Removes all listeners at once
+            this.abortController = null;
+        }
+        
         if (this.overlayElement) {
             this.overlayElement.remove();
             this.overlayElement = null;
         }
     }
 
+    /**
+     * Get the current overlay element
+     */
     get element() {
         return this.overlayElement;
     }
 }
 
-// Widget class for the checkbox style menu
+/**
+ * CHECKBOX STYLE MENU WIDGET
+ * CodeMirror widget that displays the checkbox style selection menu
+ */
 class CheckboxStyleWidget extends WidgetType {
     private plugin: CheckboxStyleMenuPlugin;
     private linePos: number;
     private menuTimeout: NodeJS.Timeout | null = null;
-    private element: HTMLElement | null = null;
-    private overlayManager: OverlayManager;
-    private tooltipElements: HTMLElement[] = []
+    private abortController: AbortController | null = null;
+    private enabledStyles: Array<{ symbol: string; description: string; enabled: boolean }> | null = null;
 
-    constructor(plugin: CheckboxStyleMenuPlugin, linePos: number, overlayManager: OverlayManager) {
+    constructor(plugin: CheckboxStyleMenuPlugin, linePos: number) {
         super();
         this.plugin = plugin;
         this.linePos = linePos;
-        this.overlayManager = overlayManager;
     }
 
+    /**
+     * Reset widget for reuse (performance optimization)
+     */
+    reset(linePos: number) {
+        this.cleanup();
+        this.linePos = linePos;
+        this.enabledStyles = null; // Force refresh of enabled styles
+    }
+
+    /**
+     * Check if this widget is equivalent to another (for CodeMirror optimization)
+     */
     eq(other: CheckboxStyleWidget) {
         return this.linePos === other.linePos;
     }
 
+    /**
+     * Hide the widget and clean up
+     * @param view - CodeMirror editor view
+     */
     private hideWidget(view: EditorView) {
-        // Force cleanup of any visible tooltips
-        const tooltips = document.querySelectorAll('.tooltip, [class*="tooltip"]');
-        tooltips.forEach(tooltip => {
-            if (tooltip.parentNode) {
-                tooltip.parentNode.removeChild(tooltip);
-            }
+        // Clean up any lingering tooltips
+        document.querySelectorAll('.tooltip, [class*="tooltip"]').forEach(tooltip => {
+            tooltip.remove();
         });
         
-        this.overlayManager.remove();
         view.dispatch({
             effects: hideWidgetEffect.of(undefined)
         });
     }
 
-    destroy() {
+    /**
+     * Clean up widget resources without destroying
+     */
+    cleanup() {
         if (this.menuTimeout) {
             clearTimeout(this.menuTimeout);
             this.menuTimeout = null;
         }
         
-        // Clean up tooltips by removing any visible tooltip elements
-        this.tooltipElements.forEach(tooltip => {
-            if (tooltip.parentNode) {
-                tooltip.parentNode.removeChild(tooltip);
-            }
-        });
-        this.tooltipElements = [];
-        
-        // Also clean up any tooltips attached to menu items
-        if (this.element) {
-            const tooltips = document.querySelectorAll('.tooltip, [class*="tooltip"]');
-            tooltips.forEach(tooltip => {
-                if (tooltip.parentNode) {
-                    tooltip.parentNode.removeChild(tooltip);
-                }
-            });
-        }
-
-        // Clean up scroll indicators
-        if ((this as any).cleanupScrollIndicators) {
-            (this as any).cleanupScrollIndicators();
-        }
-        if ((this as any).cleanupScrollGradients) {
-            (this as any).cleanupScrollGradients();
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
         }
         
-        // Clean up global interaction handler if it exists
-        if ((this as any).globalInteractionHandler && (this as any).globalInteractionEventType) {
-            document.removeEventListener(
-                (this as any).globalInteractionEventType, 
-                (this as any).globalInteractionHandler, 
-                true
-            );
-        }
-        
-        this.overlayManager.remove();
     }
 
+    /**
+     * Full cleanup and destruction
+     */
+    destroy() {
+        this.cleanup();
+        this.enabledStyles = null;
+    }
+
+    /**
+     * Simplified positioning that maintains all current behavior
+     */
     private positionMenu(view: EditorView, container: HTMLElement, menu: HTMLElement) {
         const line = view.state.doc.lineAt(this.linePos);
         const lineDOM = view.domAtPos(line.from);
         
         const lineElement = lineDOM.node.nodeType === Node.ELEMENT_NODE 
-            ? (lineDOM.node as HTMLElement).closest('.cm-line')
-            : lineDOM.node.parentElement?.closest('.cm-line');
+            ? (lineDOM.node as HTMLElement).closest('.cm-line') as HTMLElement | null
+            : lineDOM.node.parentElement?.closest('.cm-line') as HTMLElement | null;
         
         const checkbox = lineElement?.querySelector('.task-list-item-checkbox') as HTMLElement;
         
         if (!checkbox || !lineElement) {
+            // Fallback positioning
             container.style.cssText += 'transform: translateX(-100%); margin-left: -8px;';
             return;
         }
         
-        const checkboxRect = checkbox.getBoundingClientRect();
-        const lineRect = lineElement.getBoundingClientRect();
-        const editorRect = view.scrollDOM.getBoundingClientRect();
-        
-        const checkboxLeft = checkboxRect.left - lineRect.left;
+        const checkboxRect = SimpleDOMCache.getCheckboxRect(checkbox);
+        const editorRect = SimpleDOMCache.getCheckboxRect(view.scrollDOM);
         
         if (Platform.isMobile) {
-            // Mobile: position above the line, starting from the left edge of the document
-            const padding = 16;
-            
-            // Use editor width as constraint
-            const editorWidth = editorRect.width;
-            const maxMenuWidth = editorWidth - (padding * 2);
-            
-            // Set max width on menu to constrain it to document width
-            menu.style.maxWidth = `${maxMenuWidth}px`;
-            
-            // Position menu at the left edge of the document (with padding)
-            // Convert editor-relative position to line-relative position
-            const lineLeftRelativeToEditor = lineRect.left - editorRect.left;
-            const relativeLeft = padding - lineLeftRelativeToEditor;
-            
+            this.positionForMobile(container, menu, checkboxRect, editorRect, lineElement);
+        } else {
+            this.positionForDesktop(container, menu, checkboxRect, editorRect, lineElement);
+        }
+        
+        this.adjustForViewportBounds(container, menu, editorRect);
+    }
+
+    /**
+     * Mobile positioning: Above checkbox (or below if no room), left-aligned with horizontal scroll
+     */
+    private positionForMobile(container: HTMLElement, menu: HTMLElement, checkboxRect: DOMRect, editorRect: DOMRect, lineElement: HTMLElement) {
+        const menuHeight = menu.offsetHeight || 60;
+        const lineRect = SimpleDOMCache.getCheckboxRect(lineElement);
+        
+        // Calculate position relative to the line element (since container is positioned relative to it)
+        const checkboxTopInLine = checkboxRect.top - lineRect.top;
+        const checkboxBottomInLine = checkboxTopInLine + checkboxRect.height;
+        
+        // Calculate available space relative to editor bounds
+        const spaceAbove = checkboxRect.top - editorRect.top;
+        const spaceBelow = editorRect.bottom - checkboxRect.bottom;
+        
+        // Determine if we should position above or below
+        const shouldPositionAbove = spaceAbove >= menuHeight + 20 || spaceAbove > spaceBelow;
+        
+        let top: number;
+        if (shouldPositionAbove) {
+            // Position above checkbox with spacing
+            top = checkboxTopInLine - menuHeight - 12;
+        } else {
+            // Position below checkbox with spacing
+            top = checkboxBottomInLine + 8;
+        }
+        
+        // Align first menu item horizontally with the checkbox (like desktop does vertically)
+        const menuOffset = 22;
+        const checkboxLeftInLine = checkboxRect.left - lineRect.left;
+        const left = checkboxLeftInLine - menuOffset;
+        
+        container.style.cssText += `
+            position: absolute;
+            top: ${top}px;
+            left: ${left}px;
+            transform: none;
+        `;
+        
+        // Use the remaining line width from checkbox position as the content boundary
+        const maxWidth = lineRect.width - checkboxLeftInLine + menuOffset + 16;
+        menu.style.maxWidth = `${maxWidth}px`;
+    }
+
+    /**
+     * Desktop positioning: First item aligned with checkbox, left-preferred with right fallback
+     */
+    private positionForDesktop(container: HTMLElement, menu: HTMLElement, checkboxRect: DOMRect, editorRect: DOMRect, lineElement: HTMLElement) {
+        const lineRect = SimpleDOMCache.getCheckboxRect(lineElement);
+        const checkboxLeft = checkboxRect.left - lineRect.left;
+        const menuWidth = menu.offsetWidth;
+        const spacing = 8;
+        
+        // Check available space on both sides
+        const availableLeft = checkboxRect.left - editorRect.left;
+        const availableRight = editorRect.right - checkboxRect.right;
+        
+        // Prefer left side, use right if insufficient space on left
+        const useRightSide = menuWidth > availableLeft - spacing && availableRight > menuWidth + spacing;
+        
+        // Vertical alignment: first menu item aligns with checkbox center
+        const verticalOffset = -3;
+        
+        if (useRightSide) {
+            // Position to right of checkbox
             container.style.cssText += `
-                left: ${relativeLeft}px; 
-                top: -50px;
+                left: ${checkboxLeft + checkboxRect.width + spacing}px;
+                top: ${verticalOffset}px;
                 transform: none;
             `;
         } else {
-            // Desktop: position to the side as before
-            const menuWidth = menu.offsetWidth;
-            const availableLeft = checkboxRect.left - editorRect.left;
-            const availableRight = editorRect.right - checkboxRect.right;
-            const spacing = 8;
-            
-            const useRightSide = menuWidth > availableLeft - spacing && availableRight > menuWidth + spacing;
-            
-            if (useRightSide) {
-                container.style.cssText += `left: ${checkboxLeft + checkboxRect.width + spacing}px;`;
-            } else {
-                container.style.cssText += `left: ${checkboxLeft - spacing}px; transform: translateX(-100%);`;
-            }
+            // Position to left of checkbox
+            container.style.cssText += `
+                left: ${checkboxLeft - spacing}px; 
+                top: ${verticalOffset}px;
+                transform: translateX(-100%);
+            `;
         }
     }
 
-    toDOM(view: EditorView): HTMLElement {
-        const container = document.createElement('div');
-        container.className = 'checkbox-style-menu-widget';
-        
-        // Mobile-responsive styling
-        const isMobile = Platform.isMobile;
-        container.style.cssText = `
-            position: absolute;
-            z-index: 1000;
-            margin: 0;
-            display: flex;
-            justify-content: flex-start;
-            top: -3px;
-            left: 0;
-            pointer-events: none;
-            ${isMobile ? 'transform: scale(1.1);' : ''}
-        `;
-
-        const menu = document.createElement('div');
-        menu.className = 'checkbox-style-menu markdown-source-view cm-s-obsidian';
-        menu.setAttribute('role', 'menu');
-        
-        // Enhanced styling with CSS custom properties
-        menu.style.cssText = `
-            background: var(--menu-bg);
-            border: 1px solid var(--menu-border);
-            border-radius: ${isMobile ? '6px' : '4px'};
-            box-shadow: 0 2px 8px var(--menu-shadow);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: ${isMobile ? '6px 4px' : '4px 3px'};
-            pointer-events: auto;
-            visibility: hidden;
-            min-width: ${isMobile ? '44px' : 'auto'};
-            position: relative;
-            ${isMobile ? `
-                max-width: calc(100vw - 32px);
-                overflow: visible; /* Changed from hidden to allow indicators */
-                white-space: nowrap;
-            ` : ''}
-        `;
-
-        this.element = menu;
-        this.renderMenuContent(view, menu);
-        this.setupEventListeners(view, menu);
-        
-        container.appendChild(menu);
+    /**
+     * Simplified viewport bounds checking
+     */
+    private adjustForViewportBounds(container: HTMLElement, menu: HTMLElement, editorRect: DOMRect) {
+        // Only adjust for mobile overflow
+        if (!Platform.isMobile) return;
         
         requestAnimationFrame(() => {
-            this.positionMenu(view, container, menu);
-            menu.style.visibility = 'visible';
+            const menuRect = menu.getBoundingClientRect();
+            
+            // Adjust if menu overflows viewport
+            if (menuRect.bottom > window.innerHeight) {
+                const overflow = menuRect.bottom - window.innerHeight;
+                const currentTop = parseFloat(container.style.top) || 0;
+                container.style.top = `${currentTop - overflow - 8}px`;
+            }
+            
+            if (menuRect.top < 0) {
+                container.style.top = '8px';
+            }
         });
-        
-        return container;
     }
 
+    /**
+     * Create the DOM element for the widget
+     * @param view - CodeMirror editor view
+     * @returns The widget's DOM element
+     */
+    toDOM(view: EditorView): HTMLElement {
+        return PerformanceTracker.time('widget-create', () => {
+            const container = document.createElement('div');
+            container.className = 'checkbox-style-menu-widget';
+            
+            const isMobile = Platform.isMobile;
+            container.style.cssText = `
+                position: absolute;
+                z-index: 1000;
+                margin: 0;
+                display: flex;
+                justify-content: flex-start;
+                top: -3px;
+                left: 0;
+                pointer-events: none;
+                ${isMobile ? 'transform: scale(1.1);' : ''}
+            `;
+
+            const menu = document.createElement('div');
+            menu.className = 'checkbox-style-menu markdown-source-view cm-s-obsidian';
+            menu.setAttribute('role', 'menu');
+            
+            menu.style.cssText = `
+                background: var(--menu-bg);
+                border: 1px solid var(--menu-border);
+                border-radius: ${isMobile ? '6px' : '4px'};
+                box-shadow: 0 2px 8px var(--menu-shadow);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: ${isMobile ? '6px 4px' : '4px 3px'};
+                pointer-events: auto;
+                visibility: hidden;
+                min-width: ${isMobile ? '44px' : 'auto'};
+                position: relative;
+                ${isMobile ? `
+                    max-width: calc(100vw - 32px);
+                    overflow: visible;
+                    white-space: nowrap;
+                ` : ''}
+            `;
+
+            this.renderMenuContent(view, menu);
+            this.setupEventListeners(view, menu);
+            
+            container.appendChild(menu);
+            
+            // Position and show menu after DOM is ready
+            requestAnimationFrame(() => {
+                this.positionMenu(view, container, menu);
+                menu.style.visibility = 'visible';
+            });
+            
+            return container;
+        });
+    }
+
+    /**
+     * Render markdown content for the menu items
+     * @param view - CodeMirror editor view
+     * @param menu - Menu element to render into
+     */
     private async renderMenuContent(view: EditorView, menu: HTMLElement) {
         const enabledStyles = this.getEnabledStyles();
         if (enabledStyles.length === 0) {
@@ -376,10 +618,12 @@ class CheckboxStyleWidget extends WidgetType {
             return;
         }
 
+        // Create markdown list of checkbox styles
         const markdown = enabledStyles.map(style => `- [${style.symbol}] `).join('\n');
         const renderChild = new MarkdownRenderChild(menu);
         this.plugin.addChild(renderChild);
         
+        // Render markdown using Obsidian's renderer
         await MarkdownRenderer.render(
             this.plugin.app,
             markdown,
@@ -391,11 +635,24 @@ class CheckboxStyleWidget extends WidgetType {
         this.styleRenderedMarkdown(menu, enabledStyles);
     }
 
+    /**
+     * Get list of enabled checkbox styles (cached for performance)
+     * @returns Array of enabled checkbox styles
+     */
     private getEnabledStyles() {
-        return this.plugin.checkboxStyles.filter(style => style.enabled);
+        if (!this.enabledStyles) {
+            this.enabledStyles = this.plugin.checkboxStyles.filter(style => style.enabled);
+        }
+        return this.enabledStyles;
     }
 
+    /**
+     * Apply custom styling to the rendered markdown menu
+     * @param menu - Menu element
+     * @param enabledStyles - Array of enabled styles
+     */
     private styleRenderedMarkdown(menu: HTMLElement, enabledStyles: any[]) {
+        // Style the markdown preview container
         const markdownPreview = menu.querySelector('.markdown-preview-view') as HTMLElement | null;
         if (markdownPreview) {
             markdownPreview.style.cssText = `
@@ -408,6 +665,7 @@ class CheckboxStyleWidget extends WidgetType {
             `;
         }
 
+        // Style the list container
         const ul = menu.querySelector('ul') as HTMLElement | null;
         if (ul) {
             const isMobile = Platform.isMobile;
@@ -424,117 +682,106 @@ class CheckboxStyleWidget extends WidgetType {
                 ${isMobile ? `
                     overflow-x: auto; 
                     padding: 0 4px;
-                    /* Hide scrollbar */
                     scrollbar-width: none;
                     -ms-overflow-style: none;
                     scroll-behavior: smooth;
-                    /* Add momentum scrolling for iOS */
                     -webkit-overflow-scrolling: touch;
                 ` : ''}
             `;
             
-            // Hide webkit scrollbar for mobile
+            // Hide scrollbars on mobile
             if (isMobile) {
-                const style = document.createElement('style');
-                style.textContent = `
-                    .checkbox-style-menu ul::-webkit-scrollbar {
-                        display: none;
-                    }
-                `;
-                document.head.appendChild(style);
+                this.addScrollbarStyles();
             }
         }
 
         this.setupListItemStyles(menu, enabledStyles);
         
-        // Add scroll indicators for mobile
+        // Add scroll indicators for mobile horizontal scrolling
         if (Platform.isMobile && ul) {
             this.addScrollIndicators(menu, ul);
         }
     }
 
-    // Scroll indicators
+    /**
+     * Add styles to hide scrollbars on mobile
+     */
+    private addScrollbarStyles() {
+        if (!document.getElementById('checkbox-menu-styles')) {
+            const style = document.createElement('style');
+            style.id = 'checkbox-menu-styles';
+            style.textContent = `
+                .checkbox-style-menu ul::-webkit-scrollbar {
+                    display: none;
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    }
+
+    /**
+     * Add scroll indicators for mobile horizontal menu scrolling
+     * @param menu - Menu container
+     * @param scrollContainer - Scrollable list container
+     */
     private addScrollIndicators(menu: HTMLElement, scrollContainer: HTMLElement) {
-        // Create left indicator
-        const leftIndicator = document.createElement('div');
-        leftIndicator.className = 'scroll-indicator scroll-indicator-left';
-        leftIndicator.innerHTML = '‹';
-        leftIndicator.style.cssText = `
-            position: absolute;
-            left: -2px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: linear-gradient(to right, var(--menu-bg) 60%, transparent);
-            color: var(--text-muted);
-            font-size: 16px;
-            font-weight: bold;
-            padding: 0 6px;
-            pointer-events: none;
-            z-index: 1001;
-            opacity: 0;
-            transition: opacity 0.2s ease;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            border-radius: 4px 0 0 4px;
-        `;
+        const createIndicator = (direction: 'left' | 'right') => {
+            const indicator = document.createElement('div');
+            indicator.className = `scroll-indicator scroll-indicator-${direction}`;
+            indicator.textContent = direction === 'left' ? '‹' : '›';
+            indicator.style.cssText = `
+                position: absolute;
+                ${direction}: 0px;
+                top: 50%;
+                transform: translateY(-50%);
+                background: linear-gradient(to ${direction === 'left' ? 'right' : 'left'}, var(--menu-bg) 60%, transparent);
+                color: var(--text-muted);
+                font-size: 16px;
+                font-weight: bold;
+                padding: 0 6px;
+                pointer-events: none;
+                z-index: 1001;
+                opacity: 0;
+                transition: opacity 0.2s ease;
+                height: 100%;
+                display: flex;
+                align-items: center;
+                border-radius: ${direction === 'left' ? '4px 0 0 4px' : '0 4px 4px 0'};
+            `;
+            return indicator;
+        };
 
-        // Create right indicator
-        const rightIndicator = document.createElement('div');
-        rightIndicator.className = 'scroll-indicator scroll-indicator-right';
-        rightIndicator.innerHTML = '›';
-        rightIndicator.style.cssText = `
-            position: absolute;
-            right: -2px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: linear-gradient(to left, var(--menu-bg) 60%, transparent);
-            color: var(--text-muted);
-            font-size: 16px;
-            font-weight: bold;
-            padding: 0 6px;
-            pointer-events: none;
-            z-index: 1001;
-            opacity: 0;
-            transition: opacity 0.2s ease;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            border-radius: 0 4px 4px 0;
-        `;
+        const leftIndicator = createIndicator('left');
+        const rightIndicator = createIndicator('right');
 
-        // Position menu relatively to contain absolute indicators
         menu.style.position = 'relative';
-        
         menu.appendChild(leftIndicator);
         menu.appendChild(rightIndicator);
 
-        // Function to update indicator visibility
-        const updateIndicators = () => {
+        // Throttled function to update indicator visibility
+        const updateIndicators = SimpleDOMCache.throttle(() => {
             const { scrollLeft, scrollWidth, clientWidth } = scrollContainer;
             const canScrollLeft = scrollLeft > 5;
             const canScrollRight = scrollLeft < scrollWidth - clientWidth - 5;
 
             leftIndicator.style.opacity = canScrollLeft ? '1' : '0';
             rightIndicator.style.opacity = canScrollRight ? '1' : '0';
-        };
+        }, 16);
 
-        // Initial check
+        // Setup with AbortController for easy cleanup
+        this.abortController = this.abortController || new AbortController();
+        const signal = this.abortController.signal;
+
         setTimeout(updateIndicators, 100);
-        
-        // Update on scroll
-        scrollContainer.addEventListener('scroll', updateIndicators);
-        
-        // Update on resize (orientation change)
-        window.addEventListener('resize', updateIndicators);
-        
-        // Cleanup function (you'd call this in destroy method)
-        (this as any).cleanupScrollIndicators = () => {
-            scrollContainer.removeEventListener('scroll', updateIndicators);
-            window.removeEventListener('resize', updateIndicators);
-        };
+        scrollContainer.addEventListener('scroll', updateIndicators, { signal, passive: true });
+        window.addEventListener('resize', updateIndicators, { signal, passive: true });
     }
 
+    /**
+     * Style individual list items (checkbox buttons)
+     * @param menu - Menu container
+     * @param enabledStyles - Array of enabled styles
+     */
     private setupListItemStyles(menu: HTMLElement, enabledStyles: any[]) {
         const listItems = menu.querySelectorAll('li');
         const isMobile = Platform.isMobile;
@@ -556,6 +803,7 @@ class CheckboxStyleWidget extends WidgetType {
                 transition: background-color 0.1s ease;
             `;
 
+            // Style the checkbox element
             const checkbox = li.querySelector('.task-list-item-checkbox') as HTMLElement | null;
             if (checkbox) {
                 checkbox.style.margin = '0 auto';
@@ -564,224 +812,237 @@ class CheckboxStyleWidget extends WidgetType {
                 }
             }
 
-            // Enhanced tooltip with better positioning for mobile
+            // Add tooltip with style description
             this.plugin.app.workspace.onLayoutReady(() => {
                 setTooltip(li as HTMLElement, enabledStyles[index].description, {
                     placement: isMobile ? 'top' : 'right'
                 });
             });
 
+            // Set accessibility and data attributes
             li.setAttribute('data-style-index', index.toString());
             li.setAttribute('role', 'menuitem');
         });
     }
 
+    /**
+     * Consolidated event listener setup using AbortController
+     * @param view - CodeMirror editor view
+     * @param menu - Menu element
+     */
     private setupEventListeners(view: EditorView, menu: HTMLElement) {
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
         const isMobile = Platform.isMobile;
         
-        // Enhanced hover effects (desktop only)
+        // Desktop hover effects
         if (!isMobile) {
             menu.addEventListener('mouseenter', (e) => {
                 const li = (e.target as HTMLElement).closest('li');
-                if (li) {
-                    li.style.background = 'var(--menu-hover)';
-                }
-            }, true);
+                if (li) li.style.background = 'var(--menu-hover)';
+            }, { signal, capture: true });
 
             menu.addEventListener('mouseleave', (e) => {
                 const li = (e.target as HTMLElement).closest('li');
-                if (li) {
-                    li.style.background = '';
-                }
-            }, true);
+                if (li) li.style.background = '';
+            }, { signal, capture: true });
         }
 
+        // Platform-specific interaction handling
         if (isMobile) {
-            // Mobile touch handling with scroll support
-            let touchStartPos: { x: number; y: number } | null = null;
-            let touchStartTime: number = 0;
-            const scrollThreshold = 10; // pixels
-            const tapTimeThreshold = 300; // milliseconds
-
-            menu.addEventListener('touchstart', (e) => {
-                const touch = e.touches[0];
-                touchStartPos = { x: touch.clientX, y: touch.clientY };
-                touchStartTime = Date.now();
-                // Don't prevent default - allow scrolling to work
-            });
-
-            menu.addEventListener('touchend', (e) => {
-                if (!touchStartPos) return;
-
-                const touch = e.changedTouches[0];
-                const touchEndTime = Date.now();
-                const deltaX = Math.abs(touch.clientX - touchStartPos.x);
-                const deltaY = Math.abs(touch.clientY - touchStartPos.y);
-                const touchDuration = touchEndTime - touchStartTime;
-
-                // Only treat as a tap if:
-                // 1. Touch didn't move much (not a scroll)
-                // 2. Touch was quick (not a long press)
-                const isTap = deltaX < scrollThreshold && 
-                            deltaY < scrollThreshold && 
-                            touchDuration < tapTimeThreshold;
-
-                if (isTap) {
-                    const li = (e.target as HTMLElement).closest('li');
-                    if (li) {
-                        e.preventDefault(); // Only prevent default for actual taps
-                        e.stopPropagation();
-                        
-                        const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
-                        const enabledStyles = this.getEnabledStyles();
-                        const symbol = enabledStyles[index].symbol;
-                        
-                        // Haptic feedback
-                        if (this.plugin.settings.enableHapticFeedback && 'vibrate' in navigator) {
-                            navigator.vibrate(50);
-                        }
-                        
-                        this.applyCheckboxStyle(view, symbol);
-                        this.hideWidget(view);
-                    }
-                }
-
-                touchStartPos = null;
-            });
-
-            // Add visual feedback for touches on mobile
-            menu.addEventListener('touchstart', (e) => {
-                const li = (e.target as HTMLElement).closest('li');
-                if (li) {
-                    li.style.background = 'var(--menu-hover)';
-                }
-            });
-
-            menu.addEventListener('touchend', (e) => {
-                const li = (e.target as HTMLElement).closest('li');
-                if (li) {
-                    // Clear background after a short delay to show the feedback
-                    setTimeout(() => {
-                        li.style.background = '';
-                    }, 150);
-                }
-            });
-
-            menu.addEventListener('touchcancel', (e) => {
-                const li = (e.target as HTMLElement).closest('li');
-                if (li) {
-                    li.style.background = '';
-                }
-                touchStartPos = null;
-            });
-
+            this.setupMobileTouchHandling(view, menu, signal);
         } else {
-            // Desktop click handling
-            menu.addEventListener('mouseup', (e) => {
-                const li = (e.target as HTMLElement).closest('li');
-                if (li) {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    
-                    const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
-                    const enabledStyles = this.getEnabledStyles();
-                    const symbol = enabledStyles[index].symbol;
-                    
-                    this.applyCheckboxStyle(view, symbol);
-                    this.hideWidget(view);
-                }
-            });
+            this.setupDesktopClickHandling(view, menu, signal);
         }
 
-        this.setupMenuTimeouts(view, menu);
+        this.setupMenuTimeouts(view, menu, signal);
     }
 
-    private setupMenuTimeouts(view: EditorView, menu: HTMLElement) {
-        // Use global click/tap listener for both mobile and desktop
+    /**
+     * Simplified mobile touch handling
+     * @param view - CodeMirror editor view
+     * @param menu - Menu element
+     * @param signal - AbortController signal for cleanup
+     */
+    private setupMobileTouchHandling(view: EditorView, menu: HTMLElement, signal: AbortSignal) {
+        let touchStart: { x: number; y: number; time: number } | null = null;
+        const scrollThreshold = 10;
+        const tapTimeThreshold = 300;
+
+        menu.addEventListener('touchstart', (e: TouchEvent) => {
+            const touch = e.touches[0];
+            touchStart = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+            
+            const li = (e.target as HTMLElement).closest('li');
+            if (li) li.style.background = 'var(--menu-hover)';
+        }, { signal, passive: false });
+
+        menu.addEventListener('touchend', (e: TouchEvent) => {
+            const li = (e.target as HTMLElement).closest('li');
+            if (li) {
+                setTimeout(() => li.style.background = '', 150);
+            }
+
+            if (!touchStart || !li) return;
+
+            const touch = e.changedTouches[0];
+            const touchEnd = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+            
+            const deltaX = Math.abs(touchEnd.x - touchStart.x);
+            const deltaY = Math.abs(touchEnd.y - touchStart.y);
+            const duration = touchEnd.time - touchStart.time;
+
+            // Check if this was a tap vs scroll gesture
+            const isTap = deltaX < scrollThreshold && 
+                        deltaY < scrollThreshold && 
+                        duration < tapTimeThreshold;
+
+            if (isTap) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
+                const enabledStyles = this.getEnabledStyles();
+                const symbol = enabledStyles[index].symbol;
+                
+                // Provide haptic feedback if enabled
+                if (this.plugin.settings.enableHapticFeedback && 'vibrate' in navigator) {
+                    navigator.vibrate(50);
+                }
+                
+                this.applyCheckboxStyle(view, symbol);
+                this.hideWidget(view);
+            }
+
+            touchStart = null;
+        }, { signal, passive: false });
+
+        menu.addEventListener('touchcancel', () => {
+            const li = menu.querySelector('li[style*="background"]') as HTMLElement;
+            if (li) li.style.background = '';
+            touchStart = null;
+        }, { signal, passive: true });
+    }
+
+    /**
+     * Simplified desktop click handling
+     * @param view - CodeMirror editor view
+     * @param menu - Menu element
+     * @param signal - AbortController signal for cleanup
+     */
+    private setupDesktopClickHandling(view: EditorView, menu: HTMLElement, signal: AbortSignal) {
+        menu.addEventListener('mouseup', (e: MouseEvent) => {
+            const li = (e.target as HTMLElement).closest('li');
+            if (li) {
+                e.stopPropagation();
+                e.preventDefault();
+                
+                const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
+                const enabledStyles = this.getEnabledStyles();
+                const symbol = enabledStyles[index].symbol;
+                
+                this.applyCheckboxStyle(view, symbol);
+                this.hideWidget(view);
+            }
+        }, { signal });
+    }
+
+    /**
+     * Simplified timeout handling
+     * @param view - CodeMirror editor view
+     * @param menu - Menu element
+     * @param signal - AbortController signal for cleanup
+     */
+    private setupMenuTimeouts(view: EditorView, menu: HTMLElement, signal: AbortSignal) {
         const eventType = Platform.isMobile ? 'touchstart' : 'mousedown';
         const dismissTimeout = Platform.isMobile ? 3000 : 2000;
         
-        // Start timeout immediately
         this.startDismissTimeout(view, dismissTimeout);
         
-        // Add global listener to dismiss menu when clicking/tapping outside
+        // Hide menu when clicking outside
         const handleGlobalInteraction = (e: Event) => {
             if (!menu.contains(e.target as Node)) {
                 this.hideWidget(view);
-                document.removeEventListener(eventType, handleGlobalInteraction, true);
             }
         };
 
-        // Handle overlay events
-        const overlayElement = this.overlayManager.element;
-        if (overlayElement) {
-            overlayElement.addEventListener('mouseenter', () => {
-                if (this.menuTimeout) {
-                    clearTimeout(this.menuTimeout);
-                    this.menuTimeout = null;
-                }
-            });
-
-            overlayElement.addEventListener('mouseleave', () => {
-                this.startDismissTimeout(view, dismissTimeout);
-                this.overlayManager.remove();
-            });
-        }
+        document.addEventListener(eventType, handleGlobalInteraction, { signal, capture: true });
         
-        // Add listener with capture to catch interactions before they reach other elements
-        document.addEventListener(eventType, handleGlobalInteraction, true);
-        
-        // Store reference to clean up later
-        (this as any).globalInteractionHandler = handleGlobalInteraction;
-        (this as any).globalInteractionEventType = eventType;
-
-        // Desktop: Also clear timeout on hover
-        if (!Platform.isMobile) {
-            menu.addEventListener('mouseenter', () => {
-                if (this.menuTimeout) {
-                    clearTimeout(this.menuTimeout);
-                    this.menuTimeout = null;
+        // Platform-specific timeout management
+        if (Platform.isMobile) {
+            menu.addEventListener('touchstart', () => this.clearTimeout(), { signal });
+            menu.addEventListener('touchend', (e) => {
+                const li = (e.target as HTMLElement).closest('li');
+                if (!li) { // Only restart timeout if not selecting a style
+                    setTimeout(() => this.startDismissTimeout(view, dismissTimeout), 100);
                 }
-            });
-
-            menu.addEventListener('mouseleave', () => {
-                this.startDismissTimeout(view, dismissTimeout);
-            });
+            }, { signal });
+        } else {
+            menu.addEventListener('mouseenter', () => this.clearTimeout(), { signal });
+            menu.addEventListener('mouseleave', () => this.startDismissTimeout(view, dismissTimeout), { signal });
         }
     }
 
+    /**
+     * Clear the dismiss timeout
+     */
+    private clearTimeout() {
+        if (this.menuTimeout) {
+            clearTimeout(this.menuTimeout);
+            this.menuTimeout = null;
+        }
+    }
+
+    /**
+     * Start the auto-dismiss timeout
+     * @param view - CodeMirror editor view
+     * @param delay - Delay in milliseconds
+     */
     private startDismissTimeout(view: EditorView, delay: number) {
-        if (this.menuTimeout) clearTimeout(this.menuTimeout);
+        this.clearTimeout();
         this.menuTimeout = setTimeout(() => {
             this.hideWidget(view);
         }, delay);
     }
 
+    /**
+     * Apply the selected checkbox style to the current line
+     * @param view - CodeMirror editor view
+     * @param symbol - Checkbox symbol to apply
+     */
     private applyCheckboxStyle(view: EditorView, symbol: string) {
         const state = view.state;
         const line = state.doc.lineAt(this.linePos);
         const text = line.text;
 
+        // Verify this is actually a checkbox line
         if (!this.plugin.isCheckboxLine(text)) {
             return;
         }
 
+        // Find the checkbox symbol position
         const match = text.match(CHECKBOX_SYMBOL_REGEX);
         if (!match) {
             return;
         }
 
+        // Calculate exact position of the symbol to replace
         const startIndex = match.index! + match[0].indexOf('[') + 1;
         const from = line.from + startIndex;
         const to = from + 1;
 
+        // Apply the change to the document
         view.dispatch({
             changes: { from, to, insert: symbol },
         });
     }
 }
 
-// State field to manage widget decorations
+/**
+ * CODEMIRROR STATE MANAGEMENT
+ */
+
+// State field to manage widget decorations and overlay
 const checkboxWidgetState = StateField.define<{
     decorations: DecorationSet;
     overlayManager: OverlayManager;
@@ -795,19 +1056,22 @@ const checkboxWidgetState = StateField.define<{
     update(state, tr) {
         let decorations = state.decorations.map(tr.changes);
 
+        // Handle state effects
         for (let effect of tr.effects) {
             if (effect.is(showWidgetEffect)) {
                 const { pos } = effect.value;
                 const widget = Decoration.widget({
-                    widget: new CheckboxStyleWidget(
-                        tr.state.field(pluginInstanceField), 
-                        pos,
-                        state.overlayManager
-                    ),
+                    widget: WidgetPool.get(tr.state.field(pluginInstanceField), pos),
                     side: 1
                 });
                 decorations = Decoration.set([widget.range(pos)]);
             } else if (effect.is(hideWidgetEffect)) {
+                // Return widget to pool if possible
+                const currentWidget = state.decorations.iter().value;
+                if (currentWidget && 'widget' in currentWidget.spec && currentWidget.spec.widget instanceof CheckboxStyleWidget) {
+                    WidgetPool.release(currentWidget.spec.widget as CheckboxStyleWidget);
+                }
+                
                 decorations = Decoration.none;
                 state.overlayManager.remove();
             }
@@ -831,172 +1095,228 @@ const pluginInstanceField = StateField.define<CheckboxStyleMenuPlugin>({
     }
 });
 
-// Enhanced view plugin with mobile support
-const checkboxViewPlugin = ViewPlugin.fromClass(class {
-    private timer: NodeJS.Timeout | null = null;
-    private isLongPress = false;
-    private lastTarget: HTMLElement | null = null;
-    private startPos: { x: number; y: number } | null = null;
+/**
+ * INTERACTION HANDLER
+ * Consolidated long press detection for both platforms
+ */
+class InteractionHandler {
+    private state: WidgetState = {
+        isVisible: false,
+        position: -1,
+        timer: null,
+        lastTarget: null
+    };
+    private abortController: AbortController | null = null;
 
-    constructor(private view: EditorView) {
+    constructor(private view: EditorView, private plugin: CheckboxStyleMenuPlugin) {
         this.setupEventListeners();
     }
 
-    destroy() {
-        this.removeEventListeners();
-        this.cleanupTimer();
-    }
-
+    /**
+     * Set up platform-appropriate event listeners
+     */
     private setupEventListeners() {
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
+
         if (Platform.isMobile) {
-            this.view.dom.addEventListener('touchstart', this.handleTouchStart, { passive: false });
-            this.view.dom.addEventListener('touchend', this.handleTouchEnd, { passive: false });
-            this.view.dom.addEventListener('touchmove', this.handleTouchMove, { passive: false });
+            this.view.dom.addEventListener('touchstart', this.handleTouchStart.bind(this), { signal, passive: false });
+            this.view.dom.addEventListener('touchend', this.handleTouchEnd.bind(this), { signal, passive: false });
+            this.view.dom.addEventListener('touchmove', this.handleTouchMove.bind(this), { signal, passive: false });
         } else {
-            this.view.dom.addEventListener('mousedown', this.handleMouseDown);
-            this.view.dom.addEventListener('mouseup', this.handleMouseUp);
+            this.view.dom.addEventListener('mousedown', this.handleMouseDown.bind(this), { signal });
+            this.view.dom.addEventListener('mouseup', this.handleMouseUp.bind(this), { signal });
         }
     }
 
-    private removeEventListeners() {
-        if (Platform.isMobile) {
-            this.view.dom.removeEventListener('touchstart', this.handleTouchStart);
-            this.view.dom.removeEventListener('touchend', this.handleTouchEnd);
-            this.view.dom.removeEventListener('touchmove', this.handleTouchMove);
-        } else {
-            this.view.dom.removeEventListener('mousedown', this.handleMouseDown);
-            this.view.dom.removeEventListener('mouseup', this.handleMouseUp);
+    /**
+     * Clean up event listeners and timers
+     */
+    destroy() {
+        this.clearTimer();
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
         }
     }
 
-    private cleanupTimer() {
-        if (this.timer) {
-            clearTimeout(this.timer);
-            this.timer = null;
+    /**
+     * Update consolidated state
+     */
+    private updateState(updates: Partial<WidgetState>) {
+        Object.assign(this.state, updates);
+    }
+
+    /**
+     * Clear any active timer
+     */
+    private clearTimer() {
+        if (this.state.timer) {
+            clearTimeout(this.state.timer);
+            this.updateState({ timer: null });
         }
     }
 
+    /**
+     * Check if target is a handleable checkbox
+     */
     private isCheckboxTarget(target: HTMLElement): boolean {
         return target.matches('.task-list-item-checkbox') && !target.closest('.checkbox-style-menu');
     }
 
-    private handleLongPress(target: HTMLElement, clientX: number, clientY: number) {
-        const pos = this.view.posAtDOM(target);
-        if (pos === null || pos < 0 || pos > this.view.state.doc.length) {
-            return;
+    /**
+     * Handle long press detection and show menu
+     */
+    private handleLongPress(target: HTMLElement) {
+        try {
+            const pos = this.view.posAtDOM(target);
+            if (pos === null || pos < 0 || pos > this.view.state.doc.length) {
+                return;
+            }
+
+            const line = this.view.state.doc.lineAt(pos);
+            
+            // Verify this is actually a checkbox line
+            if (!this.plugin.isCheckboxLine(line.text)) {
+                return;
+            }
+
+            this.updateState({ isVisible: true, position: pos });
+            
+            // Provide haptic feedback on mobile
+            if (Platform.isMobile && this.plugin.settings.enableHapticFeedback && 'vibrate' in navigator) {
+                navigator.vibrate(75);
+            }
+
+            // Hide any existing widget first
+            this.view.dispatch({
+                effects: hideWidgetEffect.of(undefined)
+            });
+
+            // Create overlay and show widget
+            const overlayManager = this.view.state.field(checkboxWidgetState).overlayManager;
+            overlayManager.create(target);
+
+            this.view.dispatch({
+                effects: showWidgetEffect.of({ 
+                    pos: pos, 
+                    line: line.number - 1
+                })
+            });
+        } catch (error) {
+            console.error('Error in handleLongPress:', error);
         }
-
-        const line = this.view.state.doc.lineAt(pos);
-        const plugin = this.view.state.field(pluginInstanceField);
-        
-        if (!plugin.isCheckboxLine(line.text)) {
-            return;
-        }
-
-        this.isLongPress = true;
-        
-        // Haptic feedback for mobile
-        if (Platform.isMobile && plugin.settings.enableHapticFeedback && 'vibrate' in navigator) {
-            navigator.vibrate(75);
-        }
-
-        // Hide any existing widget
-        this.view.dispatch({
-            effects: hideWidgetEffect.of(undefined)
-        });
-
-        // Create overlay and show widget
-        const overlayManager = this.view.state.field(checkboxWidgetState).overlayManager;
-        overlayManager.create(target);
-
-        this.view.dispatch({
-            effects: showWidgetEffect.of({ 
-                pos: pos, 
-                line: line.number - 1
-            })
-        });
     }
 
-    // Mouse event handlers
-    handleMouseDown = (event: MouseEvent) => {
+    /**
+     * MOUSE EVENT HANDLERS (Desktop)
+     */
+    private handleMouseDown(event: MouseEvent) {
         const target = event.target as HTMLElement;
         
         if (this.isCheckboxTarget(target)) {
-            this.lastTarget = target;
-            this.cleanupTimer();
+            this.updateState({ lastTarget: target });
+            this.clearTimer();
             
-            const plugin = this.view.state.field(pluginInstanceField);
-            this.timer = setTimeout(() => {
-                if (this.lastTarget === target) {
-                    this.handleLongPress(target, event.clientX, event.clientY);
+            const timer = setTimeout(() => {
+                if (this.state.lastTarget === target) {
+                    this.handleLongPress(target);
                     event.preventDefault();
                 }
-            }, plugin.settings.longPressDuration);
+            }, this.plugin.settings.longPressDuration);
+            
+            this.updateState({ timer });
         }
-    };
+    }
 
-    handleMouseUp = () => {
-        this.cleanupTimer();
-        this.isLongPress = false;
-        this.lastTarget = null;
-    };
+    private handleMouseUp() {
+        this.clearTimer();
+        this.updateState({ lastTarget: null });
+    }
 
-    // Touch event handlers
-    handleTouchStart = (event: TouchEvent) => {
+    /**
+     * TOUCH EVENT HANDLERS (Mobile)
+     */
+    private handleTouchStart(event: TouchEvent) {
         const target = event.target as HTMLElement;
         
         if (this.isCheckboxTarget(target) && event.touches.length === 1) {
             const touch = event.touches[0];
-            this.lastTarget = target;
-            this.startPos = { x: touch.clientX, y: touch.clientY };
-            this.cleanupTimer();
+            this.updateState({ 
+                lastTarget: target,
+                touchStart: { x: touch.clientX, y: touch.clientY, time: Date.now() }
+            });
+            this.clearTimer();
             
-            const plugin = this.view.state.field(pluginInstanceField);
-            this.timer = setTimeout(() => {
-                if (this.lastTarget === target) {
-                    this.handleLongPress(target, touch.clientX, touch.clientY);
+            const timer = setTimeout(() => {
+                if (this.state.lastTarget === target) {
+                    this.handleLongPress(target);
                     event.preventDefault();
                 }
-            }, plugin.settings.touchLongPressDuration);
-        }
-    };
-
-    handleTouchMove = (event: TouchEvent) => {
-        if (this.startPos && event.touches.length === 1) {
-            const touch = event.touches[0];
-            const deltaX = Math.abs(touch.clientX - this.startPos.x);
-            const deltaY = Math.abs(touch.clientY - this.startPos.y);
+            }, this.plugin.settings.touchLongPressDuration);
             
-            // Cancel long press if user moves finger too much (scrolling)
+            this.updateState({ timer });
+        }
+    }
+
+    private handleTouchMove(event: TouchEvent) {
+        if (this.state.touchStart && event.touches.length === 1) {
+            const touch = event.touches[0];
+            const deltaX = Math.abs(touch.clientX - this.state.touchStart.x);
+            const deltaY = Math.abs(touch.clientY - this.state.touchStart.y);
+            
+            // Cancel long press if user moves finger too much (indicating scroll)
             if (deltaX > 10 || deltaY > 10) {
-                this.cleanupTimer();
-                this.lastTarget = null;
-                this.startPos = null;
+                this.clearTimer();
+                this.updateState({ lastTarget: null, touchStart: undefined });
             }
         }
-    };
+    }
 
-    handleTouchEnd = () => {
-        this.cleanupTimer();
-        this.isLongPress = false;
-        this.lastTarget = null;
-        this.startPos = null;
-    };
+    private handleTouchEnd() {
+        this.clearTimer();
+        this.updateState({ lastTarget: null, touchStart: undefined });
+    }
+}
+
+/**
+ * CODEMIRROR VIEW PLUGIN
+ * Simplified view plugin using the interaction handler
+ */
+const checkboxViewPlugin = ViewPlugin.fromClass(class {
+    private interactionHandler: InteractionHandler;
+
+    constructor(private view: EditorView) {
+        const plugin = this.view.state.field(pluginInstanceField);
+        this.interactionHandler = new InteractionHandler(view, plugin);
+    }
+
+    /**
+     * Clean up when view plugin is destroyed
+     */
+    destroy() {
+        this.interactionHandler.destroy();
+    }
 });
 
+/**
+ * MAIN PLUGIN CLASS
+ */
 export default class CheckboxStyleMenuPlugin extends Plugin {
     settings: CheckboxStyleSettings;
     public checkboxStyles = CHECKBOX_STYLES.map(style => ({ ...style, enabled: false }));
     private settingsStyleEl: HTMLStyleElement | null = null;
 
+    /**
+     * Plugin initialization
+     */
     async onload() {
         await this.loadSettings();
         
-        // Initialize enabled states
-        this.checkboxStyles.forEach(style => {
-            style.enabled = this.settings.styles[style.symbol] ?? false;
-        });
+        // Initialize enabled states from settings
+        this.updateCheckboxStyles();
 
+        // Set up UI and CodeMirror integration
         this.createSettingsStyles();
         this.registerEditorExtensions();
         this.addSettingTab(new CheckboxStyleSettingTab(this.app, this));
@@ -1004,17 +1324,39 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         console.log('Loaded Checkbox Style Menu');
     }
 
+    /**
+     * Plugin cleanup
+     */
     onunload() {
+        // Clear widget pool and caches
+        WidgetPool.clear();
+        SimpleDOMCache.clearCache();
+        
         this.removeSettingsStyles();
         console.log('Unloaded Checkbox Style Menu');
     }
 
+    /**
+     * Update checkbox styles enabled state from settings
+     */
+    private updateCheckboxStyles() {
+        this.checkboxStyles.forEach(style => {
+            style.enabled = this.settings.styles[style.symbol] ?? false;
+        });
+    }
+
+    /**
+     * Inject CSS styles for settings panel
+     */
     private createSettingsStyles() {
         this.settingsStyleEl = document.createElement('style');
         this.settingsStyleEl.textContent = SETTINGS_STYLES;
         document.head.appendChild(this.settingsStyleEl);
     }
 
+    /**
+     * Remove injected CSS styles
+     */
     private removeSettingsStyles() {
         if (this.settingsStyleEl) {
             this.settingsStyleEl.remove();
@@ -1022,6 +1364,9 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         }
     }
 
+    /**
+     * Register CodeMirror extensions for the editor
+     */
     private registerEditorExtensions() {
         this.registerEditorExtension([
             checkboxWidgetState,
@@ -1030,20 +1375,46 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         ]);
     }
 
+    /**
+     * Save plugin settings with validation and update cached states
+     */
     async saveSettings() {
+        // Validate settings before saving
+        this.settings.longPressDuration = Math.max(100, Math.min(1000, this.settings.longPressDuration));
+        this.settings.touchLongPressDuration = Math.max(200, Math.min(1500, this.settings.touchLongPressDuration));
+        
         await this.saveData(this.settings);
+        this.updateCheckboxStyles(); // Update cached enabled states
     }
 
+    /**
+     * Load plugin settings with validation and defaults
+     */
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const data = await this.loadData();
+        this.settings = {
+            ...DEFAULT_SETTINGS,
+            ...data,
+            // Validate numeric ranges
+            longPressDuration: Math.max(100, Math.min(1000, data?.longPressDuration ?? DEFAULT_SETTINGS.longPressDuration)),
+            touchLongPressDuration: Math.max(200, Math.min(1500, data?.touchLongPressDuration ?? DEFAULT_SETTINGS.touchLongPressDuration))
+        };
     }
 
+    /**
+     * Check if a line contains a checkbox
+     * @param line - Text line to check
+     * @returns True if line contains a checkbox
+     */
     public isCheckboxLine(line: string): boolean {
         return CHECKBOX_REGEX.test(line);
     }
 }
 
-// Enhanced settings tab with mobile considerations
+/**
+ * SETTINGS TAB
+ * Simplified UI for configuring plugin settings
+ */
 class CheckboxStyleSettingTab extends PluginSettingTab {
     plugin: CheckboxStyleMenuPlugin;
 
@@ -1052,23 +1423,28 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         this.plugin = plugin;
     }
 
+    /**
+     * Build the settings UI
+     */
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-
-        containerEl.createEl('h2', { text: 'Checkbox Style Menu Settings' });
 
         this.addDurationSettings(containerEl);
         this.addMobileSettings(containerEl);
         this.addStyleToggles(containerEl);
     }
 
+    /**
+     * Add long press duration settings with validation
+     * @param containerEl - Container element for settings
+     */
     private addDurationSettings(containerEl: HTMLElement) {
         // Desktop long press duration
         this.createDurationSetting(
             containerEl,
             'Long press duration (Desktop)',
-            'How long to hold down the mouse button on a checkbox before the style menu appears',
+            'Hold a checkbox this long to open its style menu.',
             'longPressDuration',
             100,
             1000
@@ -1078,13 +1454,17 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         this.createDurationSetting(
             containerEl,
             'Long press duration (Mobile)',
-            'How long to hold touch on a checkbox before the style menu appears on mobile devices',
+            'Hold a checkbox this long to open its style menu.',
             'touchLongPressDuration',
             200,
             1500
         );
     }
 
+    /**
+     * Add mobile-specific settings
+     * @param containerEl - Container element for settings
+     */
     private addMobileSettings(containerEl: HTMLElement) {
         if (Platform.isMobile) {
             new Setting(containerEl)
@@ -1099,6 +1479,15 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         }
     }
 
+    /**
+     * Create a duration setting with validation
+     * @param containerEl - Container element
+     * @param name - Setting name
+     * @param desc - Setting description
+     * @param settingKey - Key in settings object
+     * @param min - Minimum value
+     * @param max - Maximum value
+     */
     private createDurationSetting(
         containerEl: HTMLElement,
         name: string,
@@ -1143,48 +1532,73 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
             });
     }
 
+    /**
+     * Add checkbox style toggle settings with batch processing
+     * @param containerEl - Container element for settings
+     */
     private addStyleToggles(containerEl: HTMLElement) {
-        containerEl.createEl('h3', { text: 'Checkbox Styles' });
-        containerEl.createEl('p', { 
-            text: 'Choose which checkbox styles to show in the menu:', 
-            cls: 'setting-item-description' 
-        });
+        containerEl.createEl('h2', { text: 'Choose which styles to show in the menu:' });
 
         const toggleContainer = containerEl.createEl('div', {
             cls: 'checkbox-style-toggles',
         });
 
-        this.plugin.checkboxStyles.forEach(style => {
-            const setting = new Setting(toggleContainer);
-            const fragment = document.createDocumentFragment();
-            const nameContainer = document.createElement('div');
-            nameContainer.className = 'setting-item-name markdown-source-view mod-cm6 cm-s-obsidian';
-
-            const markdown = `- [${style.symbol}] ${style.description}`;
-            const renderChild = new MarkdownRenderChild(nameContainer);
-            this.plugin.addChild(renderChild);
-            MarkdownRenderer.render(
-                this.app,
-                markdown,
-                nameContainer,
-                '',
-                renderChild
-            );
-
-            const previewView = nameContainer.querySelector('.markdown-preview-view');
-            if (previewView) {
-                previewView.classList.add('cm-s-obsidian', 'mod-cm6', 'markdown-rendered');
+        // Process settings in batches to avoid blocking the UI
+        const processStylesBatch = async (startIndex: number, batchSize: number = 8) => {
+            const endIndex = Math.min(startIndex + batchSize, this.plugin.checkboxStyles.length);
+            
+            for (let i = startIndex; i < endIndex; i++) {
+                const style = this.plugin.checkboxStyles[i];
+                await this.createStyleToggle(toggleContainer, style);
             }
+            
+            // Process next batch if there are more items
+            if (endIndex < this.plugin.checkboxStyles.length) {
+                setTimeout(() => processStylesBatch(endIndex, batchSize), 0);
+            }
+        };
+        
+        // Start processing styles
+        processStylesBatch(0);
+    }
+    
+    /**
+     * Create a toggle setting for a checkbox style with error handling
+     * @param container - Container element for the setting
+     * @param style - Checkbox style configuration
+     */
+    private async createStyleToggle(container: HTMLElement, style: any) {
+        const setting = new Setting(container);
+        
+        // Create the markdown preview container
+        const nameContainer = document.createElement('div');
+        nameContainer.className = 'setting-item-name markdown-source-view mod-cm6 cm-s-obsidian';
+        
+        const markdown = `- [${style.symbol}] ${style.description}`;
+        const renderChild = new MarkdownRenderChild(nameContainer);
+        this.plugin.addChild(renderChild);
+        
+        // Render the checkbox style using Obsidian's markdown renderer
+        await MarkdownRenderer.render(
+            this.app,
+            markdown,
+            nameContainer,
+            '',
+            renderChild
+        );
 
-            fragment.appendChild(nameContainer);
-            setting.setName(fragment);
-            setting.addToggle(toggle => toggle
-                .setValue(this.plugin.settings.styles[style.symbol])
-                .onChange(async (value) => {
-                    this.plugin.settings.styles[style.symbol] = value;
-                    style.enabled = value;
-                    await this.plugin.saveSettings();
-                }));
-        });
+        // Create document fragment for the setting name
+        const nameFragment = document.createDocumentFragment();
+        nameFragment.appendChild(nameContainer);
+        
+        // Configure the setting with toggle control
+        setting.setName(nameFragment);
+        setting.addToggle(toggle => toggle
+            .setValue(this.plugin.settings.styles[style.symbol])
+            .onChange(async (value) => {
+                this.plugin.settings.styles[style.symbol] = value;
+                style.enabled = value;
+                await this.plugin.saveSettings();
+            }));
     }
 }
