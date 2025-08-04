@@ -1,7 +1,7 @@
 {
 	"name": "checkbox-style-menu",
 	"version": "1.0.0",
-	"description": "Adds a menu for selecting checkbox styles in Obsidian (https://obsidian.md)",
+	"description": "Provides an intuitive menu for quickly changing checkbox styles in Obsidian (https://obsidian.md)",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

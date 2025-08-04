@@ -3,7 +3,7 @@
 	"name": "Checkbox Style Menu",
 	"version": "1.0.0",
 	"minAppVersion": "1.8.10",
-	"description": "Provides a menu for easy checkbox style selection. (e.g., to-do, incomplete, done, canceled).",
+	"description": "Provides an intuitive menu for quickly changing checkbox styles.",
 	"author": "ReticentEclectic",
 	"authorUrl": "https://github.com/ReticentEclectic",
 	"fundingUrl": "https://ko-fi.com/ReticentEclectic",
