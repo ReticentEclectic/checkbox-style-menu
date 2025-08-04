@@ -1,16 +1,24 @@
 {
 	"name": "checkbox-style-menu",
 	"version": "1.0.0",
-	"description": "Adds a menu for selecting cehckbox styles in Obsidian (https://obsidian.md)",
+	"description": "Adds a menu for selecting checkbox styles in Obsidian (https://obsidian.md)",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
-	"keywords": [],
-	"author": "",
-	"license": "MIT",
+	"keywords": [
+    "obsidian",
+    "plugin",
+    "checkbox",
+    "task",
+    "markdown",
+	"styles",
+	"menu"
+	],
+	"author": "ReticentEclectic",
+	"license": "0BSD",
 	"devDependencies": {
 		"@types/node": "^16.11.6",
 		"@typescript-eslint/eslint-plugin": "5.29.0",

@@ -1,6 +1,6 @@
 //Main.ts for Checkbox Style Menu
 
-import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform } from 'obsidian';
+import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice } from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewPlugin, WidgetType } from '@codemirror/view';
 import { StateField, StateEffect } from '@codemirror/state';
 
@@ -53,8 +53,8 @@ const CHECKBOX_STYLES = [
 ] as const;
 
 // Pre-compiled regex patterns for performance
-const CHECKBOX_REGEX = /^\s*-\s*\[(.)\]\s*(.*)?$/;        // Matches entire checkbox line
-const CHECKBOX_SYMBOL_REGEX = /-\s*\[(.)\]/;              // Matches just the checkbox part
+const CHECKBOX_REGEX = /^\s*(?:-|\d+\.)\s*\[(.)\]\s*(.*)?$/;        // Matches both "- [ ]" and "1. [ ]"
+const CHECKBOX_SYMBOL_REGEX = /(?:-|\d+\.)\s*\[(.)\]/;              // Matches checkbox part in both formats
 
 // Default plugin settings with validation
 const DEFAULT_SETTINGS: CheckboxStyleSettings = {
@@ -129,7 +129,7 @@ const hideWidgetEffect = StateEffect.define<void>();
 
 // Simplified DOM cache for expensive calculations only
 class SimpleDOMCache {
-    private static positionCache = new Map<string, { rect: DOMRect; timestamp: number }>();
+    private static cache = new WeakMap<HTMLElement, { rect: DOMRect; timestamp: number }>();
     private static readonly CACHE_TTL = 100; // Cache time-to-live in milliseconds
     
     /**
@@ -139,8 +139,7 @@ class SimpleDOMCache {
      */
     static getCheckboxRect(element: HTMLElement): DOMRect {
         // Use element's position in DOM as cache key
-        const key = element.dataset.cacheKey || (element.dataset.cacheKey = Math.random().toString());
-        const cached = this.positionCache.get(key);
+        const cached = this.cache.get(element);
         const now = Date.now();
         
         if (cached && (now - cached.timestamp) < this.CACHE_TTL) {
@@ -148,15 +147,8 @@ class SimpleDOMCache {
         }
         
         const rect = element.getBoundingClientRect();
-        this.positionCache.set(key, { rect, timestamp: now });
+        this.cache.set(element, { rect, timestamp: now });
         return rect;
-    }
-    
-    /**
-     * Clear all cached data
-     */
-    static clearCache() {
-        this.positionCache.clear();
     }
     
     /**
@@ -174,25 +166,6 @@ class SimpleDOMCache {
                 return func(...args);
             }
         }) as T;
-    }
-}
-
-// Performance monitoring for development
-class PerformanceTracker {
-    private static enabled = false; // Changed from process.env check since it's not available
-    
-    static time<T>(operation: string, fn: () => T): T {
-        if (!this.enabled) return fn();
-        
-        const start = performance.now();
-        const result = fn();
-        const duration = performance.now() - start;
-        
-        if (duration > 16) { // Longer than one frame
-            console.warn(`Slow operation: ${operation} took ${duration.toFixed(2)}ms`);
-        }
-        
-        return result;
     }
 }
 
@@ -280,8 +253,8 @@ class OverlayManager {
         };
         
         // Block all interaction events
-        ['mouseup', 'mousedown', 'click', 'touchstart', 'touchend'].forEach(eventType => {
-            this.overlayElement!.addEventListener(eventType, preventEvent, { signal });
+        ['mouseup', 'mousedown', 'click', 'touchstart', 'touchend', 'touchcancel'].forEach(eventType => {
+            this.overlayElement!.addEventListener(eventType, preventEvent, { signal, passive: false });
         });
         
         // Handle scroll with throttling
@@ -550,60 +523,58 @@ class CheckboxStyleWidget extends WidgetType {
      * @returns The widget's DOM element
      */
     toDOM(view: EditorView): HTMLElement {
-        return PerformanceTracker.time('widget-create', () => {
-            const container = document.createElement('div');
-            container.className = 'checkbox-style-menu-widget';
-            
-            const isMobile = Platform.isMobile;
-            container.style.cssText = `
-                position: absolute;
-                z-index: 1000;
-                margin: 0;
-                display: flex;
-                justify-content: flex-start;
-                top: -3px;
-                left: 0;
-                pointer-events: none;
-                ${isMobile ? 'transform: scale(1.1);' : ''}
-            `;
+        const container = document.createElement('div');
+        container.className = 'checkbox-style-menu-widget';
+        
+        const isMobile = Platform.isMobile;
+        container.style.cssText = `
+            position: absolute;
+            z-index: 1000;
+            margin: 0;
+            display: flex;
+            justify-content: flex-start;
+            top: -3px;
+            left: 0;
+            pointer-events: none;
+            ${isMobile ? 'transform: scale(1.1);' : ''}
+        `;
 
-            const menu = document.createElement('div');
-            menu.className = 'checkbox-style-menu markdown-source-view cm-s-obsidian';
-            menu.setAttribute('role', 'menu');
-            
-            menu.style.cssText = `
-                background: var(--menu-bg);
-                border: 1px solid var(--menu-border);
-                border-radius: ${isMobile ? '6px' : '4px'};
-                box-shadow: 0 2px 8px var(--menu-shadow);
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                padding: ${isMobile ? '6px 4px' : '4px 3px'};
-                pointer-events: auto;
-                visibility: hidden;
-                min-width: ${isMobile ? '44px' : 'auto'};
-                position: relative;
-                ${isMobile ? `
-                    max-width: calc(100vw - 32px);
-                    overflow: visible;
-                    white-space: nowrap;
-                ` : ''}
-            `;
+        const menu = document.createElement('div');
+        menu.className = 'checkbox-style-menu markdown-source-view cm-s-obsidian';
+        menu.setAttribute('role', 'menu');
+        
+        menu.style.cssText = `
+            background: var(--menu-bg);
+            border: 1px solid var(--menu-border);
+            border-radius: ${isMobile ? '6px' : '4px'};
+            box-shadow: 0 2px 8px var(--menu-shadow);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: ${isMobile ? '6px 4px' : '4px 3px'};
+            pointer-events: auto;
+            visibility: hidden;
+            min-width: ${isMobile ? '44px' : 'auto'};
+            position: relative;
+            ${isMobile ? `
+                max-width: calc(100vw - 32px);
+                overflow: visible;
+                white-space: nowrap;
+            ` : ''}
+        `;
 
-            this.renderMenuContent(view, menu);
-            this.setupEventListeners(view, menu);
-            
-            container.appendChild(menu);
-            
-            // Position and show menu after DOM is ready
-            requestAnimationFrame(() => {
-                this.positionMenu(view, container, menu);
-                menu.style.visibility = 'visible';
-            });
-            
-            return container;
+        this.renderMenuContent(view, menu);
+        this.setupEventListeners(view, menu);
+        
+        container.appendChild(menu);
+        
+        // Position and show menu after DOM is ready
+        requestAnimationFrame(() => {
+            this.positionMenu(view, container, menu);
+            menu.style.visibility = 'visible';
         });
+        
+        return container;
     }
 
     /**
@@ -958,6 +929,8 @@ class CheckboxStyleWidget extends WidgetType {
         const dismissTimeout = Platform.isMobile ? 3000 : 2000;
         
         this.startDismissTimeout(view, dismissTimeout);
+
+        const editorContainer = view.dom.closest('.workspace-leaf') || view.dom;
         
         // Hide menu when clicking outside
         const handleGlobalInteraction = (e: Event) => {
@@ -966,7 +939,7 @@ class CheckboxStyleWidget extends WidgetType {
             }
         };
 
-        document.addEventListener(eventType, handleGlobalInteraction, { signal, capture: true });
+        editorContainer.addEventListener(eventType, handleGlobalInteraction, { signal, capture: true });
         
         // Platform-specific timeout management
         if (Platform.isMobile) {
@@ -1330,7 +1303,11 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     onunload() {
         // Clear widget pool and caches
         WidgetPool.clear();
-        SimpleDOMCache.clearCache();
+
+        const dynamicStyle = document.getElementById('checkbox-menu-styles');
+        if (dynamicStyle) {
+            dynamicStyle.remove();
+        }
         
         this.removeSettingsStyles();
         console.log('Unloaded Checkbox Style Menu');
@@ -1395,10 +1372,34 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         this.settings = {
             ...DEFAULT_SETTINGS,
             ...data,
-            // Validate numeric ranges
-            longPressDuration: Math.max(100, Math.min(1000, data?.longPressDuration ?? DEFAULT_SETTINGS.longPressDuration)),
-            touchLongPressDuration: Math.max(200, Math.min(1500, data?.touchLongPressDuration ?? DEFAULT_SETTINGS.touchLongPressDuration))
+            // Validate styles object exists and has valid structure
+            styles: this.validateStylesObject(data?.styles),
+            // Validate numeric ranges with more robust checking
+            longPressDuration: this.validateDuration(data?.longPressDuration, 100, 1000, 350),
+            touchLongPressDuration: this.validateDuration(data?.touchLongPressDuration, 200, 1500, 500),
+            enableHapticFeedback: typeof data?.enableHapticFeedback === 'boolean' ? data.enableHapticFeedback : true
         };
+    }
+
+    private validateDuration(value: any, min: number, max: number, defaultValue: number): number {
+        const num = typeof value === 'number' ? value : parseInt(value);
+        return !isNaN(num) && num >= min && num <= max ? num : defaultValue;
+    }
+
+    private validateStylesObject(styles: any): { [symbol: string]: boolean } {
+        if (!styles || typeof styles !== 'object') {
+            return DEFAULT_SETTINGS.styles;
+        }
+        
+        // Ensure all expected styles exist
+        const validated: { [symbol: string]: boolean } = {};
+        CHECKBOX_STYLES.forEach(style => {
+            validated[style.symbol] = typeof styles[style.symbol] === 'boolean' ? 
+                styles[style.symbol] : 
+                DEFAULT_SETTINGS.styles[style.symbol];
+        });
+        
+        return validated;
     }
 
     /**
@@ -1412,8 +1413,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 }
 
 /**
- * SETTINGS TAB
- * Simplified UI for configuring plugin settings
+ * CORRECTED SETTINGS TAB CLASS
+ * Following proper Obsidian guidelines and simplified style organization
  */
 class CheckboxStyleSettingTab extends PluginSettingTab {
     plugin: CheckboxStyleMenuPlugin;
@@ -1424,11 +1425,14 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * Build the settings UI
+     * Build the settings UI following Obsidian guidelines
      */
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
+
+        // ✅ FIXED: No h1 - Obsidian handles the main title automatically
+        // ✅ FIXED: Direct settings, no unnecessary sections for simple settings
 
         this.addDurationSettings(containerEl);
         this.addMobileSettings(containerEl);
@@ -1436,14 +1440,13 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * Add long press duration settings with validation
-     * @param containerEl - Container element for settings
+     * ✅ CORRECTED: Simple duration settings without sections
      */
-    private addDurationSettings(containerEl: HTMLElement) {
+    private addDurationSettings(containerEl: HTMLElement): void {
         // Desktop long press duration
         this.createDurationSetting(
             containerEl,
-            'Long press duration (Desktop)',
+            'Long-press duration (Desktop)',
             'Hold a checkbox this long to open its style menu.',
             'longPressDuration',
             100,
@@ -1453,7 +1456,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         // Mobile long press duration
         this.createDurationSetting(
             containerEl,
-            'Long press duration (Mobile)',
+            'Long-press duration (Mobile)',
             'Hold a checkbox this long to open its style menu.',
             'touchLongPressDuration',
             200,
@@ -1462,31 +1465,97 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * Add mobile-specific settings
-     * @param containerEl - Container element for settings
+     * ✅ CORRECTED: Simple mobile settings
      */
-    private addMobileSettings(containerEl: HTMLElement) {
-        if (Platform.isMobile) {
-            new Setting(containerEl)
-                .setName('Enable haptic feedback')
-                .setDesc('Provide haptic feedback when long pressing checkboxes on mobile devices')
-                .addToggle(toggle => toggle
-                    .setValue(this.plugin.settings.enableHapticFeedback)
-                    .onChange(async (value) => {
-                        this.plugin.settings.enableHapticFeedback = value;
-                        await this.plugin.saveSettings();
-                    }));
-        }
+    private addMobileSettings(containerEl: HTMLElement): void {
+        new Setting(containerEl)
+            .setName('Enable haptic feedback')
+            .setDesc('Provide haptic feedback when long pressing checkboxes on mobile.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableHapticFeedback)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableHapticFeedback = value;
+                    await this.plugin.saveSettings();
+                }));
     }
 
     /**
-     * Create a duration setting with validation
-     * @param containerEl - Container element
-     * @param name - Setting name
-     * @param desc - Setting description
-     * @param settingKey - Key in settings object
-     * @param min - Minimum value
-     * @param max - Maximum value
+     * ✅ CORRECTED: Simplified style organization as requested
+     */
+    private addStyleToggles(containerEl: HTMLElement): void {
+        // ✅ Main heading for the style section
+        containerEl.createEl('h2', { text: 'Choose which styles to show in the menu:' });
+
+        const toggleContainer = containerEl.createDiv({
+            cls: 'checkbox-style-toggles',
+        });
+
+        // ✅ SIMPLIFIED: Basic styles group
+        this.addStyleCategory(toggleContainer, 'Basic', [
+            { symbol: ' ', description: 'To-do' },
+            { symbol: '/', description: 'Incomplete' },
+            { symbol: 'x', description: 'Done' },
+            { symbol: '-', description: 'Cancelled' },
+            { symbol: '>', description: 'Forwarded' },
+            { symbol: '<', description: 'Scheduling' }
+        ]);
+
+        // ✅ SIMPLIFIED: Extras group
+        this.addStyleCategory(toggleContainer, 'Extras', [
+            { symbol: '?', description: 'Question' },
+            { symbol: '!', description: 'Important' },
+            { symbol: '*', description: 'Star' },
+            { symbol: '"', description: 'Quote' },
+            { symbol: 'l', description: 'Location' },
+            { symbol: 'b', description: 'Bookmark' },
+            { symbol: 'i', description: 'Information' },
+            { symbol: 'S', description: 'Savings' },
+            { symbol: 'I', description: 'Idea' },
+            { symbol: 'p', description: 'Pro' },
+            { symbol: 'c', description: 'Con' },
+            { symbol: 'f', description: 'Fire' },
+            { symbol: 'k', description: 'Key' },
+            { symbol: 'w', description: 'Win' },
+            { symbol: 'u', description: 'Up' },
+            { symbol: 'd', description: 'Down' }
+        ]);
+
+        // ✅ OPTIONAL: Add reset button if you want it
+        this.addResetButton(containerEl);
+    }
+
+    /**
+     * ✅ SIMPLIFIED: Style category with just h3 subheading
+     */
+    private addStyleCategory(containerEl: HTMLElement, categoryName: string, styles: Array<{symbol: string, description: string}>): void {
+        // ✅ Simple h3 subheading for categories
+        containerEl.createEl('h3', { text: categoryName });
+        
+        // Process each style in the category synchronously - no need for async batching
+        styles.forEach((style) => {
+            this.createStyleToggle(containerEl, style);
+        });
+    }
+
+    /**
+     * ✅ OPTIONAL: Simple reset button
+     */
+    private addResetButton(containerEl: HTMLElement): void {
+        new Setting(containerEl)
+            .setName('Reset all checkbox style selections to default')
+            .addButton(button => button
+                .setButtonText('Reset')
+                .onClick(async () => {
+                    // Reset to default styles
+                    this.plugin.settings.styles = { ...DEFAULT_SETTINGS.styles };
+                    await this.plugin.saveSettings();
+                    this.display(); // Reload settings display
+                    new Notice('Checkbox styles reset to default');
+                }));
+    }
+
+    /**
+     * ✅ CORRECTED: Duration setting (keeping your improved version)
      */
     private createDurationSetting(
         containerEl: HTMLElement,
@@ -1495,7 +1564,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         settingKey: keyof CheckboxStyleSettings,
         min: number,
         max: number
-    ) {
+    ): void {
         const setting = new Setting(containerEl)
             .setName(name)
             .setDesc(desc);
@@ -1531,74 +1600,58 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
                     });
             });
     }
-
-    /**
-     * Add checkbox style toggle settings with batch processing
-     * @param containerEl - Container element for settings
-     */
-    private addStyleToggles(containerEl: HTMLElement) {
-        containerEl.createEl('h2', { text: 'Choose which styles to show in the menu:' });
-
-        const toggleContainer = containerEl.createEl('div', {
-            cls: 'checkbox-style-toggles',
-        });
-
-        // Process settings in batches to avoid blocking the UI
-        const processStylesBatch = async (startIndex: number, batchSize: number = 8) => {
-            const endIndex = Math.min(startIndex + batchSize, this.plugin.checkboxStyles.length);
-            
-            for (let i = startIndex; i < endIndex; i++) {
-                const style = this.plugin.checkboxStyles[i];
-                await this.createStyleToggle(toggleContainer, style);
-            }
-            
-            // Process next batch if there are more items
-            if (endIndex < this.plugin.checkboxStyles.length) {
-                setTimeout(() => processStylesBatch(endIndex, batchSize), 0);
-            }
-        };
-        
-        // Start processing styles
-        processStylesBatch(0);
-    }
     
     /**
-     * Create a toggle setting for a checkbox style with error handling
-     * @param container - Container element for the setting
-     * @param style - Checkbox style configuration
+     * ✅ SIMPLIFIED: Style toggle creation without async complexity
      */
-    private async createStyleToggle(container: HTMLElement, style: any) {
-        const setting = new Setting(container);
-        
-        // Create the markdown preview container
-        const nameContainer = document.createElement('div');
-        nameContainer.className = 'setting-item-name markdown-source-view mod-cm6 cm-s-obsidian';
-        
-        const markdown = `- [${style.symbol}] ${style.description}`;
-        const renderChild = new MarkdownRenderChild(nameContainer);
-        this.plugin.addChild(renderChild);
-        
-        // Render the checkbox style using Obsidian's markdown renderer
-        await MarkdownRenderer.render(
-            this.app,
-            markdown,
-            nameContainer,
-            '',
-            renderChild
-        );
-
-        // Create document fragment for the setting name
-        const nameFragment = document.createDocumentFragment();
-        nameFragment.appendChild(nameContainer);
-        
-        // Configure the setting with toggle control
-        setting.setName(nameFragment);
-        setting.addToggle(toggle => toggle
-            .setValue(this.plugin.settings.styles[style.symbol])
-            .onChange(async (value) => {
-                this.plugin.settings.styles[style.symbol] = value;
-                style.enabled = value;
-                await this.plugin.saveSettings();
-            }));
+    private createStyleToggle(container: HTMLElement, style: {symbol: string, description: string}): void {
+        try {
+            const setting = new Setting(container);
+            
+            // Create the markdown preview container
+            const nameContainer = container.createDiv();
+            nameContainer.className = 'setting-item-name markdown-source-view mod-cm6 cm-s-obsidian';
+            
+            const markdown = `- [${style.symbol}] ${style.description}`;
+            const renderChild = new MarkdownRenderChild(nameContainer);
+            this.plugin.addChild(renderChild);
+            
+            // Render the checkbox style using Obsidian's markdown renderer
+            MarkdownRenderer.render(
+                this.app,
+                markdown,
+                nameContainer,
+                '',
+                renderChild
+            ).then(() => {
+                // Create document fragment for the setting name
+                const nameFragment = document.createDocumentFragment();
+                nameFragment.appendChild(nameContainer);
+                
+                // Configure the setting with toggle control
+                setting.setName(nameFragment);
+                setting.addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.styles[style.symbol] ?? false)
+                    .onChange(async (value) => {
+                        this.plugin.settings.styles[style.symbol] = value;
+                        // Update plugin's cached state immediately
+                        const styleObj = this.plugin.checkboxStyles.find(s => s.symbol === style.symbol);
+                        if (styleObj) {
+                            styleObj.enabled = value;
+                        }
+                        await this.plugin.saveSettings();
+                    }));
+            });
+        } catch (error) {
+            // Fallback simple toggle
+            new Setting(container)
+                .setName(`${style.description} [${style.symbol}]`)
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.styles[style.symbol] ?? false)
+                    .onChange(async (value) => {
+                        this.plugin.settings.styles[style.symbol] = value;
+                        await this.plugin.saveSettings();
+                    }));
+        }
     }
 }
