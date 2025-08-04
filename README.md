@@ -1,64 +1,133 @@
 
-# CheckboxStyleMenu
+# Checkbox Style Menu
 
-**CheckboxStyleMenu** is an Obsidian plugin that enhances task checkboxes by allowing users to switch between multiple states (e.g., to-do, incomplete, done, canceled) via a long-press menu. Inspired by the multi-state checkboxes in the Minimal Theme, this plugin makes it faster and more intuitive to manage task statuses in your notes.
+Provides an intuitive menu for quickly changing checkbox styles in [Obsidian](https://obsidian.md)
+
+![Style Change Demo](https://github.com/user-attachments/assets/99900dee-997c-443f-a554-283395572d46)
 
 ## Features
 
-- **Long-Press Menu**: Click and hold (or long-press on mobile) a task checkbox to open a menu with available states.
-- **Multiple Checkbox States**: Supports four states out of the box:
-    - `[ ]` To-do
-    - `[/]` Incomplete
-    - `[x]` Done
-    - `[-]` Canceled
-- **Cross-Platform**: Works on both desktop and mobile Obsidian apps.
-- **Lightweight**: Minimal code for fast performance and compatibility with Obsidian’s editor.
+- **Quick Style Selection**: Long-press any checkbox to open a style menu
+- **22 Checkbox Styles**: Supports all 22 checkbox styles of [Minimal](https://github.com/kepano/obsidian-minimal) and [Things](https://github.com/colineckert/obsidian-things)
+- **Customizable**: Choose which styles appear in your menu
+- **Theme Compatible**: Matches any theme or custom CSS
+- **Cross-Platform**: Works seamlessly on desktop and mobile devices
+- **Touch-Optimized**: Mobile-friendly with haptic feedback and optimized touch interactions
+
+## Available Checkbox Styles
+
+### Basic
+
+- `[ ]` To-do
+- `[/]` Incomplete
+- `[x]` Done
+- `[-]` Cancelled
+- `[>]` Forwarded
+- `[<]` Scheduling
+
+### Extra
+
+- `[?]` Question
+- `[!]` Important
+- `[*]` Star
+- `["]` Quote
+- `[l]` Location
+- `[b]` Bookmark
+- `[i]` Information
+- `[S]` Savings
+- `[I]` Idea
+- `[p]` Pro
+- `[c]` Con
+- `[f]` Fire
+- `[k]` Key
+- `[w]` Win
+- `[u]` Up
+- `[d]` Down
+
+### Theme Adaptive
+
+![Theme Demo](https://github.com/user-attachments/assets/8169c7c3-5337-4e59-a391-4910fbf303bd)
 
 ## Installation
 
-### Manual Installation
-
-1. Download the latest release from the [GitHub repository](https://github.com/ReticentEclectic/checkbox-style-menu/releases) (or replace with your repo link).
-2. Extract the `checkbox-style-menu` folder to your Obsidian plugins directory: `Vault/.obsidian/plugins/`.
-3. In Obsidian, go to **Settings > Community Plugins**, enable **Community Plugins** if not already enabled, and toggle **SmartMultiCheckbox** to activate it.
-
-### Via BRAT (Beta Release Automation Tool)
-
-1. Install the **Obsidian42 - BRAT** plugin from the Community Plugins directory.
-2. In Obsidian, go to **Settings > BRAT > Add Beta Plugin**.
-3. Enter the repository URL: `ReticentEclectic/checkbox-style-menu` (replace with your actual repo if different).
-4. Enable **SmartMultiCheckbox** in **Settings > Community Plugins**.
+1. Open Obsidian Settings
+2. Go to Community Plugins
+3. Search for "Checkbox Style Menu"
+4. Install and enable the plugin
 
 ## Usage
 
-1. Create a task in a Markdown note using the standard syntax, e.g., `- [ ] Task name`.
-2. **Desktop**: Click and hold on the checkbox for about 0.5 seconds to open the style menu.
-3. **Mobile**: Long-press the checkbox to open the menu.
-4. Hover over (or tap) the desired state (e.g., `[x] Done`) and release to apply it.
-5. The checkbox in your note will update to the selected state, e.g., `- [x] Task name`.
+### Desktop
 
-## Support
+1. **Long-press** a checkbox
+2. A menu will appear showing your enabled checkbox styles
+3. **Click** on any style to apply it to the checkbox
 
-If you find **SmartMultiCheckbox** helpful, consider supporting its development! You can buy me a coffee at [Ko-fi](https://ko-fi.com/ReticentEclectic).
+### Mobile
+
+1. **Long-press** a checkbox
+2. A scrollable horizontal menu appears above or below the checkbox
+3. **Tap** any style to apply it
+
+## Configuration
+
+Access plugin settings through: **Settings → Community Plugins → Checkbox Style Menu**
+
+### Available Options
+
+- **Long Press Duration (Desktop)**: Adjust how long to hold before the menu appears (100-1000ms)
+- **Long Press Duration (Mobile)**: Separate timing for mobile devices (200-1500ms)
+- **Enable Haptic Feedback**: Toggle vibration feedback on mobile devices
+- **Style Selection**: Choose which checkbox styles appear in your menu
+
+### Customizing Your Menu
+
+You can enable/disable any of the 22 available checkbox styles:
+
+1. Go to plugin settings
+2. Under "Choose which styles to show in the menu"
+3. Toggle individual styles on/off
+4. Only enabled styles will appear in the selection menu
+
+## Compatibility
+
+- **Obsidian Version**: Requires Obsidian 1.8.10 or later
+- **Platforms**: Desktop and Mobile
+- **Note Types**: Works with any note containing markdown checkboxes
+- **Requires Compatible Theme:** Any theme that adds checkbox styles (e.g. [Minimal](https://github.com/kepano/obsidian-minimal) or [Things](https://github.com/colineckert/obsidian-things))
+
+## Troubleshooting
+
+### Menu Not Working
+
+- Check that you're long-pressing (not just clicking) a checkbox
+- Ensure you have a compatible theme enabled 
+- Verify the long-press duration in settings matches your preference
+
+### Mobile Issues
+
+- Make sure you're not scrolling while trying to long-press
+- Make sure you're not missing the checkbox (they can be small on mobile depending on settings)
 
 ## Contributing
 
-Contributions are welcome! To contribute:
+If you would like to contribute, please feel free to:
 
-1. Fork the repository: `https://github.com/ReticentEclectic/checkbox-style-menu` (replace with your repo).
-2. Create a new branch for your feature or bug fix.
-3. Submit a pull request with a clear description of your changes.
-
-Please follow the [Obsidian Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines) when contributing.
-
-## Issues
-
-If you encounter bugs or have feature requests, please open an issue on the [GitHub repository](https://github.com/ReticentEclectic/checkbox-style-menu/issues) (replace with your repo).
+- Report bugs or request features via [GitHub Issues](https://github.com/ReticentEclectic/checkbox-style-menu/issues)
+- Submit pull requests with improvements
 
 ## License
 
-This plugin is licensed under the [MIT License](LICENSE).
+This project is licensed under the [0BSD License](LICENSE) - you are free to use it however you'd like.
 
 ## Author
 
 Developed by ReticentEclectic.
+
+## Support
+
+If this plugin made your life easier and you’d like to say thanks, consider buying me a coffee: [Ko-fi](https://ko-fi.com/ReticentEclectic).
+
+## Disclaimer
+
+This plugin is provided as-is and is designed for my personal use of Obsidian on macOS and iOS. As such, it is not thoroughly tested across all operating systems and use cases.
