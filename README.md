@@ -107,7 +107,7 @@ You can enable/disable any of the 22 available checkbox styles:
 ### Mobile Issues
 
 - Make sure you're not scrolling while trying to long-press
-- Make sure you're not missing the checkbox (they can be small on mobile depending on settings)
+- Make sure you're not missing the checkbox (they can be small on mobile)
 
 ## Contributing
 
@@ -130,4 +130,4 @@ If this plugin made your life easier and you’d like to say thanks, consider bu
 
 ## Disclaimer
 
-This plugin is provided as-is and is designed for my personal use of Obsidian on macOS and iOS. As such, it is not thoroughly tested across all operating systems and use cases.
+This plugin has been primarily developed and tested on macOS and iOS. While it's designed to work across all platforms and themes, it is not thoroughly tested across all operating systems and use cases.
