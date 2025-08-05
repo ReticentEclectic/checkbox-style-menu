@@ -7,7 +7,7 @@ Provides an intuitive menu for quickly changing checkbox styles in [Obsidian](ht
 
 ## Features
 
-- **Quick Style Selection**: Long-press any checkbox to open a style menu
+- **Quick Style Selection**: Long-press a checkbox to open a style menu
 - **22 Checkbox Styles**: Supports all 22 checkbox styles of [Minimal](https://github.com/kepano/obsidian-minimal) and [Things](https://github.com/colineckert/obsidian-things)
 - **Customizable**: Choose which styles appear in your menu
 - **Theme Compatible**: Matches any theme or custom CSS
@@ -48,6 +48,12 @@ Provides an intuitive menu for quickly changing checkbox styles in [Obsidian](ht
 
 ![Theme Demo](https://github.com/user-attachments/assets/8169c7c3-5337-4e59-a391-4910fbf303bd)
 
+## Manual Installation
+
+1. Download the latest release from GitHub
+4. Extract to `YourVaultFolder/.obsidian/plugins/checkbox-style-menu/`
+5. Reload Obsidian and enable in Community Plugins
+
 ## Usage
 
 ### Desktop
@@ -87,6 +93,7 @@ You can enable/disable any of the 22 available checkbox styles:
 - **Obsidian Version**: Requires Obsidian 1.8.10 or later
 - **Platforms**: Desktop and Mobile
 - **Note Types**: Works with any note containing markdown checkboxes
+- **Live-Preview Only**: Does not work in *Reading view* or *Source mode*
 - **Requires Compatible Theme:** Any theme that adds checkbox styles (e.g. [Minimal](https://github.com/kepano/obsidian-minimal) or [Things](https://github.com/colineckert/obsidian-things))
 
 ## Troubleshooting
