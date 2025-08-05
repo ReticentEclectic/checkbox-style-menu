@@ -198,7 +198,7 @@ class WidgetPool {
 
 /**
  * OVERLAY MANAGEMENT
- * Simplified overlay that prevents checkbox clicks during menu display
+ * Invisible overlay that prevents the initial long-press from toggling the target checkbox
  */
 class OverlayManager {
     private overlayElement: HTMLElement | null = null;
@@ -384,7 +384,7 @@ class CheckboxStyleWidget extends WidgetType {
     }
 
     /**
-     * Simplified positioning that maintains all current behavior
+     * Style menu positioning
      */
     private positionMenu(view: EditorView, container: HTMLElement, menu: HTMLElement) {
         const line = view.state.doc.lineAt(this.linePos);
@@ -415,7 +415,7 @@ class CheckboxStyleWidget extends WidgetType {
     }
 
     /**
-     * Mobile positioning: Above checkbox (or below if no room), left-aligned with horizontal scroll
+     * Mobile positioning: First item aligned with checkbox, above-preferred with below fallback (horizontal scroll)
      */
     private positionForMobile(container: HTMLElement, menu: HTMLElement, checkboxRect: DOMRect, editorRect: DOMRect, lineElement: HTMLElement) {
         const menuHeight = menu.offsetHeight || 60;
@@ -429,7 +429,7 @@ class CheckboxStyleWidget extends WidgetType {
         const spaceAbove = checkboxRect.top - editorRect.top;
         const spaceBelow = editorRect.bottom - checkboxRect.bottom;
         
-        // Determine if we should position above or below
+        // Determine if it should position above or below
         const shouldPositionAbove = spaceAbove >= menuHeight + 20 || spaceAbove > spaceBelow;
         
         let top: number;
@@ -441,7 +441,7 @@ class CheckboxStyleWidget extends WidgetType {
             top = checkboxBottomInLine + 8;
         }
         
-        // Align first menu item horizontally with the checkbox (like desktop does vertically)
+        // Align first menu item horizontally with the checkbox (matching desktop's vertical)
         const menuOffset = 22;
         const checkboxLeftInLine = checkboxRect.left - lineRect.left;
         const left = checkboxLeftInLine - menuOffset;
@@ -495,7 +495,7 @@ class CheckboxStyleWidget extends WidgetType {
     }
 
     /**
-     * Simplified viewport bounds checking
+     * Viewport bounds checking
      */
     private adjustForViewportBounds(container: HTMLElement, menu: HTMLElement, editorRect: DOMRect) {
         // Only adjust for mobile overflow
@@ -594,7 +594,7 @@ class CheckboxStyleWidget extends WidgetType {
         const renderChild = new MarkdownRenderChild(menu);
         this.plugin.addChild(renderChild);
         
-        // Render markdown using Obsidian's renderer
+        // Render markdown using Obsidian's renderer so theme and styling is natively applied
         await MarkdownRenderer.render(
             this.plugin.app,
             markdown,
@@ -830,7 +830,7 @@ class CheckboxStyleWidget extends WidgetType {
     }
 
     /**
-     * Simplified mobile touch handling
+     * Mobile touch handling
      * @param view - CodeMirror editor view
      * @param menu - Menu element
      * @param signal - AbortController signal for cleanup
@@ -896,7 +896,7 @@ class CheckboxStyleWidget extends WidgetType {
     }
 
     /**
-     * Simplified desktop click handling
+     * Desktop click handling
      * @param view - CodeMirror editor view
      * @param menu - Menu element
      * @param signal - AbortController signal for cleanup
@@ -919,7 +919,7 @@ class CheckboxStyleWidget extends WidgetType {
     }
 
     /**
-     * Simplified timeout handling
+     * Timeout handling
      * @param view - CodeMirror editor view
      * @param menu - Menu element
      * @param signal - AbortController signal for cleanup
@@ -1254,7 +1254,7 @@ class InteractionHandler {
 
 /**
  * CODEMIRROR VIEW PLUGIN
- * Simplified view plugin using the interaction handler
+ * View plugin using the interaction handler
  */
 const checkboxViewPlugin = ViewPlugin.fromClass(class {
     private interactionHandler: InteractionHandler;
@@ -1413,8 +1413,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 }
 
 /**
- * CORRECTED SETTINGS TAB CLASS
- * Following proper Obsidian guidelines and simplified style organization
+ * SETTINGS TAB CLASS
  */
 class CheckboxStyleSettingTab extends PluginSettingTab {
     plugin: CheckboxStyleMenuPlugin;
@@ -1425,14 +1424,11 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * Build the settings UI following Obsidian guidelines
+     * Build the settings UI
      */
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-
-        // ✅ FIXED: No h1 - Obsidian handles the main title automatically
-        // ✅ FIXED: Direct settings, no unnecessary sections for simple settings
 
         this.addDurationSettings(containerEl);
         this.addMobileSettings(containerEl);
@@ -1440,7 +1436,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * ✅ CORRECTED: Simple duration settings without sections
+     * Duration settings
      */
     private addDurationSettings(containerEl: HTMLElement): void {
         // Desktop long press duration
@@ -1465,7 +1461,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * ✅ CORRECTED: Simple mobile settings
+     * Haptic feedback for Mobile
      */
     private addMobileSettings(containerEl: HTMLElement): void {
         new Setting(containerEl)
@@ -1480,17 +1476,16 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * ✅ CORRECTED: Simplified style organization as requested
+     * Style selection settings
      */
     private addStyleToggles(containerEl: HTMLElement): void {
-        // ✅ Main heading for the style section
         containerEl.createEl('h2', { text: 'Choose which styles to show in the menu:' });
 
         const toggleContainer = containerEl.createDiv({
             cls: 'checkbox-style-toggles',
         });
 
-        // ✅ SIMPLIFIED: Basic styles group
+        // Basic styles
         this.addStyleCategory(toggleContainer, 'Basic', [
             { symbol: ' ', description: 'To-do' },
             { symbol: '/', description: 'Incomplete' },
@@ -1500,7 +1495,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
             { symbol: '<', description: 'Scheduling' }
         ]);
 
-        // ✅ SIMPLIFIED: Extras group
+        // Extras styles
         this.addStyleCategory(toggleContainer, 'Extras', [
             { symbol: '?', description: 'Question' },
             { symbol: '!', description: 'Important' },
@@ -1520,25 +1515,24 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
             { symbol: 'd', description: 'Down' }
         ]);
 
-        // ✅ OPTIONAL: Add reset button if you want it
+        // Reset button
         this.addResetButton(containerEl);
     }
 
     /**
-     * ✅ SIMPLIFIED: Style category with just h3 subheading
+     * Style category
      */
     private addStyleCategory(containerEl: HTMLElement, categoryName: string, styles: Array<{symbol: string, description: string}>): void {
-        // ✅ Simple h3 subheading for categories
         containerEl.createEl('h3', { text: categoryName });
         
-        // Process each style in the category synchronously - no need for async batching
+        // Process each style in the category synchronously
         styles.forEach((style) => {
             this.createStyleToggle(containerEl, style);
         });
     }
 
     /**
-     * ✅ OPTIONAL: Simple reset button
+     * Reset button
      */
     private addResetButton(containerEl: HTMLElement): void {
         new Setting(containerEl)
@@ -1555,7 +1549,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
 
     /**
-     * ✅ CORRECTED: Duration setting (keeping your improved version)
+     * Duration setting
      */
     private createDurationSetting(
         containerEl: HTMLElement,
@@ -1602,7 +1596,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     }
     
     /**
-     * ✅ SIMPLIFIED: Style toggle creation without async complexity
+     * Style toggle creation
      */
     private createStyleToggle(container: HTMLElement, style: {symbol: string, description: string}): void {
         try {
