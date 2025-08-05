@@ -48,13 +48,6 @@ Provides an intuitive menu for quickly changing checkbox styles in [Obsidian](ht
 
 ![Theme Demo](https://github.com/user-attachments/assets/8169c7c3-5337-4e59-a391-4910fbf303bd)
 
-## Installation
-
-1. Open Obsidian Settings
-2. Go to Community Plugins
-3. Search for "Checkbox Style Menu"
-4. Install and enable the plugin
-
 ## Usage
 
 ### Desktop
@@ -115,6 +108,10 @@ If you would like to contribute, please feel free to:
 
 - Report bugs or request features via [GitHub Issues](https://github.com/ReticentEclectic/checkbox-style-menu/issues)
 - Submit pull requests with improvements
+
+## Privacy & Data
+
+All operations are performed locally. No user data is collected, stored, or transmitted at any point.
 
 ## License
 
