@@ -219,6 +219,7 @@ class CheckboxStyleWidget {
     private menuTimeout: NodeJS.Timeout | null = null;
     private abortController: AbortController | null = null;
     private enabledStyles: Array<{ symbol: string; description: string; enabled: boolean }> | null = null;
+    private cleanupScrollIndicators?: () => void;
 
     constructor(
         private plugin: CheckboxStyleMenuPlugin, 
@@ -229,6 +230,7 @@ class CheckboxStyleWidget {
     async show(view: EditorView) {
         await this.createMenu();
         this.setupPopper();
+        this.setupScrollIndicators();
         this.setupEventListeners(view);
         this.startDismissTimeout(view, Platform.isMobile ? 3000 : 2000);
     }
@@ -258,28 +260,66 @@ class CheckboxStyleWidget {
     private setupPopper() {
         if (!this.menuElement) return;
 
-        const placement: Placement = Platform.isMobile ? 'top' : 'left-start';
+        const placement: Placement = Platform.isMobile ? 'top-start' : 'left-start';
         const config = {
             placement,
             modifiers: [
                 { 
                     name: 'offset', 
                     options: { 
-                        offset: Platform.isMobile ? [0, 8] : [-8, 8]
+                        offset: Platform.isMobile ? [0, 12] : [-8, 6]
                     } 
                 },
                 { 
                     name: 'flip', 
                     options: { 
                         fallbackPlacements: Platform.isMobile ? 
-                            ['bottom', 'left', 'right'] : ['right-start', 'left-end', 'right-end'] 
+                            ['bottom-start'] : ['right-start'] 
                     } 
                 },
-                { name: 'preventOverflow', options: { padding: 8 } },
+                { 
+                name: 'preventOverflow', 
+                options: { 
+                    padding: 8,
+                    boundary: Platform.isMobile ? 'viewport' : 'clippingParents'
+                } 
+            },
             ],
         };
 
         this.popperInstance = createPopper(this.targetElement, this.menuElement, config);
+    }
+
+    private setupScrollIndicators() {
+        if (!Platform.isMobile || !this.menuElement) return;
+
+        const ul = this.menuElement.querySelector('ul');
+        if (!ul) return;
+
+        const updateScrollIndicators = () => {
+            const { scrollLeft, scrollWidth, clientWidth } = ul;
+            const canScrollLeft = scrollLeft > 5; // Small threshold to account for rounding
+            const canScrollRight = scrollLeft < scrollWidth - clientWidth - 5;
+
+            this.menuElement!.classList.toggle('has-scroll-left', canScrollLeft);
+            this.menuElement!.classList.toggle('has-scroll-right', canScrollRight);
+        };
+
+        // Initial check
+        setTimeout(updateScrollIndicators, 50);
+
+        // Update on scroll
+        ul.addEventListener('scroll', updateScrollIndicators, { passive: true });
+
+        // Update on resize (if content changes)
+        const resizeObserver = new ResizeObserver(updateScrollIndicators);
+        resizeObserver.observe(ul);
+
+        // Clean up when widget is destroyed
+        this.cleanupScrollIndicators = () => {
+            ul.removeEventListener('scroll', updateScrollIndicators);
+            resizeObserver.disconnect();
+        };
     }
 
     private async renderMenuContent(enabledStyles: any[]) {
@@ -434,6 +474,10 @@ class CheckboxStyleWidget {
         this.clearTimeout();
         this.abortController?.abort();
         this.abortController = null;
+        
+        // Clean up scroll indicators
+        this.cleanupScrollIndicators?.();
+        this.cleanupScrollIndicators = undefined;
         
         if (this.popperInstance) {
             this.popperInstance.destroy();

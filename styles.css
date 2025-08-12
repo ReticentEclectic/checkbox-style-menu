@@ -96,45 +96,97 @@
 /* =========================
    Mobile Responsive Design
    ========================= */
-@media (max-width: 768px) {
-    .checkbox-style-menu-widget {
-        --menu-border-radius: 6px;
-        --menu-gap: 8px;
-        --menu-padding: 6px 4px;
-        
-        min-width: 44px;
-        max-width: calc(100vw - 32px);
-        overflow: visible;
-        white-space: nowrap;
-    }
+
+/* Target mobile devices specifically using Platform.isMobile detection */
+.is-mobile .checkbox-style-menu-widget {
+    --menu-border-radius: 6px;
+    --menu-gap: 8px;
+    --menu-padding: 6px 4px;
     
-    .checkbox-style-menu-widget ul {
-        flex-direction: row;
-        overflow-x: auto;
-        padding: 0 4px;
-        scrollbar-width: none;
-        -ms-overflow-style: none;
-        scroll-behavior: smooth;
-        -webkit-overflow-scrolling: touch;
-    }
-    
-    .checkbox-style-menu-widget ul::-webkit-scrollbar {
-        display: none;
-    }
-    
-    .checkbox-style-menu-widget li {
-        padding: 4px 6px !important;
-        margin: 0 !important;
-        min-height: 44px;
-        min-width: 44px;
-        flex-shrink: 0;
-        justify-content: center;
-    }
-    
-    .checkbox-style-menu-widget li .task-list-item-checkbox {
-        transform: scale(1.2);
-        margin: 0 auto !important;
-    }
+    min-width: 44px;
+    max-width: calc(100vw - 32px);
+    overflow: visible;
+    white-space: nowrap;
+    position: relative;
+}
+
+.is-mobile .checkbox-style-menu-widget ul {
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0 20px; /* Add padding for scroll indicators */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+}
+
+.is-mobile .checkbox-style-menu-widget ul::-webkit-scrollbar {
+    display: none;
+}
+
+/* Scroll Indicators */
+.is-mobile .checkbox-style-menu-widget::before,
+.is-mobile .checkbox-style-menu-widget::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--text-normal);
+    z-index: 1001;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    background: linear-gradient(to right, var(--menu-bg), transparent);
+}
+
+.is-mobile .checkbox-style-menu-widget::before {
+    content: '‹';
+    left: 0;
+    background: linear-gradient(to right, var(--menu-bg), transparent);
+}
+
+.is-mobile .checkbox-style-menu-widget::after {
+    content: '›';
+    right: 0;
+    background: linear-gradient(to left, var(--menu-bg), transparent);
+}
+
+/* Show indicators when scrollable */
+.is-mobile .checkbox-style-menu-widget.has-scroll-left::before {
+    opacity: 0.8;
+}
+
+.is-mobile .checkbox-style-menu-widget.has-scroll-right::after {
+    opacity: 0.8;
+}
+
+.is-mobile .checkbox-style-menu-widget li {
+    padding: 4px 6px !important;
+    margin: 0 !important;
+    min-height: 44px;
+    min-width: 44px;
+    flex-shrink: 0;
+    justify-content: center;
+}
+
+.is-mobile .checkbox-style-menu-widget li .task-list-item-checkbox {
+    transform: scale(1.2);
+    margin: 0 auto !important;
+}
+
+/* Settings Panel Mobile Styles */
+.is-mobile .checkbox-style-toggles .setting-item-name li {
+    font-size: calc(var(--font-text-size) * 1.1);
+}
+
+.is-mobile .checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
+    transform: scale(1.2);
 }
 
 /* =========================
