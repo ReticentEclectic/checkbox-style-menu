@@ -9,13 +9,13 @@
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [
-    "obsidian",
-    "plugin",
-    "checkbox",
-    "task",
-    "markdown",
-	"styles",
-	"menu"
+		"obsidian",
+		"plugin",
+		"checkbox",
+		"task",
+		"markdown",
+		"styles",
+		"menu"
 	],
 	"author": "ReticentEclectic",
 	"license": "0BSD",
@@ -30,6 +30,7 @@
 		"typescript": "4.7.4"
 	},
 	"dependencies": {
-		"@codemirror/language": "^6.11.0"
+		"@codemirror/language": "^6.11.0",
+		"@popperjs/core": "^2.11.8"
 	}
 }

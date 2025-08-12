@@ -1,0 +1,166 @@
+/* =========================
+   CSS Custom Properties
+   ========================= */
+.checkbox-style-menu-widget {
+    --menu-bg: var(--background-primary);
+    --menu-border: var(--background-modifier-border);
+    --menu-shadow: var(--background-modifier-box-shadow);
+    --menu-hover: var(--background-modifier-hover);
+    --menu-border-radius: 4px;
+    --menu-gap: 2px;
+    --menu-padding: 4px 3px;
+}
+
+/* =========================
+   Menu Widget Base Styles
+   ========================= */
+.checkbox-style-menu-widget {
+    background: var(--menu-bg);
+    border: 1px solid var(--menu-border);
+    border-radius: var(--menu-border-radius);
+    box-shadow: 0 2px 8px var(--menu-shadow);
+    padding: var(--menu-padding);
+    z-index: 1000;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: flex-start;
+    align-items: flex-start;
+}
+
+/* =========================
+   Overlay Styles
+   ========================= */
+.checkbox-overlay {
+    background: rgba(219, 114, 102, 0.3);
+    border-radius: 2px;
+    cursor: default;
+    pointer-events: auto;
+}
+
+/* =========================
+   Markdown Content Styles
+   ========================= */
+.checkbox-style-menu-widget .markdown-preview-view {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: flex-start;
+}
+
+.checkbox-style-menu-widget ul {
+    list-style: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--menu-gap);
+}
+
+.checkbox-style-menu-widget li {
+    padding: var(--menu-gap) !important;
+    margin: var(--menu-gap) 0 !important;
+    cursor: pointer;
+    display: flex !important;
+    justify-content: flex-start;
+    align-items: center;
+    position: relative;
+    width: auto;
+    box-sizing: border-box;
+    border-radius: var(--menu-gap);
+    transition: background-color 0.1s ease;
+}
+
+.checkbox-style-menu-widget li:hover {
+    background: var(--menu-hover);
+}
+
+.checkbox-style-menu-widget li .task-list-item-checkbox {
+    margin: 0 !important;
+    flex-shrink: 0;
+}
+
+.checkbox-style-menu-widget li p {
+    margin: 0 !important;
+    padding: 0 !important;
+    display: inline;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* =========================
+   Mobile Responsive Design
+   ========================= */
+@media (max-width: 768px) {
+    .checkbox-style-menu-widget {
+        --menu-border-radius: 6px;
+        --menu-gap: 8px;
+        --menu-padding: 6px 4px;
+        
+        min-width: 44px;
+        max-width: calc(100vw - 32px);
+        overflow: visible;
+        white-space: nowrap;
+    }
+    
+    .checkbox-style-menu-widget ul {
+        flex-direction: row;
+        overflow-x: auto;
+        padding: 0 4px;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .checkbox-style-menu-widget ul::-webkit-scrollbar {
+        display: none;
+    }
+    
+    .checkbox-style-menu-widget li {
+        padding: 4px 6px !important;
+        margin: 0 !important;
+        min-height: 44px;
+        min-width: 44px;
+        flex-shrink: 0;
+        justify-content: center;
+    }
+    
+    .checkbox-style-menu-widget li .task-list-item-checkbox {
+        transform: scale(1.2);
+        margin: 0 auto !important;
+    }
+}
+
+/* =========================
+   Settings Panel Styles
+   ========================= */
+.checkbox-style-toggles .setting-item-name ul {
+    margin: 0;
+}
+
+.checkbox-style-toggles .setting-item-name li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--font-text-size);
+}
+
+.checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
+    flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+    .checkbox-style-toggles .setting-item-name li {
+        font-size: calc(var(--font-text-size) * 1.1);
+    }
+    
+    .checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
+        transform: scale(1.2);
+    }
+}
