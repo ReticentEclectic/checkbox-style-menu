@@ -1,4 +1,4 @@
-//Main.ts for Checkbox Style Menu with Popper.js - Further optimized
+//Main.ts for Checkbox Style Menu
 
 import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice } from 'obsidian';
 import { EditorView, ViewPlugin } from '@codemirror/view';
@@ -13,7 +13,7 @@ interface CheckboxStyleSettings {
     enableHapticFeedback: boolean;
 }
 
-// Simplified widget state
+// Widget state
 interface WidgetState {
     timer: NodeJS.Timeout | null;
     lastTarget: HTMLElement | null;
@@ -134,6 +134,8 @@ class OverlayManager {
         if (!this.overlayElement) return;
 
         this.abortController = new AbortController();
+        const { signal } = this.abortController;
+
         const preventEvent = (e: Event) => {
             e.preventDefault();
             e.stopPropagation();
@@ -141,11 +143,60 @@ class OverlayManager {
             return false;
         };
         
+        // Block interaction events
         ['mouseup', 'mousedown', 'click', 'touchstart', 'touchend', 'touchcancel']
             .forEach(eventType => {
                 this.overlayElement!.addEventListener(eventType, preventEvent, 
-                    { signal: this.abortController!.signal, passive: false });
+                    { signal, passive: false });
             });
+
+        // Desktop: Temporarily disable pointer events during scroll
+        if (!Platform.isMobile) {
+            const throttledWheelHandler = this.throttle(() => {
+                if (this.overlayElement) {
+                    this.overlayElement.style.pointerEvents = 'none';
+                    setTimeout(() => {
+                        if (this.overlayElement) {
+                            this.overlayElement.style.pointerEvents = 'auto';
+                        }
+                    }, 10);
+                }
+            }, 16);
+
+            this.overlayElement.addEventListener('wheel', throttledWheelHandler, { signal });
+
+            // Remove overlay on mouse leave
+            this.overlayElement.addEventListener('mouseleave', () => {
+                this.remove();
+            }, { signal, passive: true });
+        }
+
+        // Mobile: Remove overlay when scrolling starts
+        if (Platform.isMobile) {
+            let startY = 0;
+            
+            this.overlayElement.addEventListener('touchstart', (e: TouchEvent) => {
+                startY = e.touches[0].clientY;
+            }, { signal });
+            
+            this.overlayElement.addEventListener('touchmove', (e: TouchEvent) => {
+                const currentY = e.touches[0].clientY;
+                if (Math.abs(currentY - startY) > 10) {
+                    this.remove();
+                }
+            }, { signal });
+        }
+    }
+
+    private throttle<T extends (...args: any[]) => void>(func: T, delay: number): T {
+        let lastCall = 0;
+        return ((...args: Parameters<T>) => {
+            const now = Date.now();
+            if (now - lastCall >= delay) {
+                lastCall = now;
+                return func(...args);
+            }
+        }) as T;
     }
 
     remove() {
