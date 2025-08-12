@@ -258,16 +258,21 @@ class CheckboxStyleWidget {
     private setupPopper() {
         if (!this.menuElement) return;
 
-        const placement: Placement = Platform.isMobile ? 'top' : 'left';
+        const placement: Placement = Platform.isMobile ? 'top' : 'left-start';
         const config = {
             placement,
             modifiers: [
-                { name: 'offset', options: { offset: Platform.isMobile ? [0, 8] : [8, 0] } },
+                { 
+                    name: 'offset', 
+                    options: { 
+                        offset: Platform.isMobile ? [0, 8] : [-8, 8]
+                    } 
+                },
                 { 
                     name: 'flip', 
                     options: { 
                         fallbackPlacements: Platform.isMobile ? 
-                            ['bottom', 'left', 'right'] : ['right', 'top', 'bottom'] 
+                            ['bottom', 'left', 'right'] : ['right-start', 'left-end', 'right-end'] 
                     } 
                 },
                 { name: 'preventOverflow', options: { padding: 8 } },
