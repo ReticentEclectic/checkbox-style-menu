@@ -271,17 +271,18 @@ class CheckboxStyleWidget {
                     } 
                 },
                 { 
-                    name: 'flip', 
-                    options: { 
-                        fallbackPlacements: Platform.isMobile ? 
-                            ['bottom-start'] : ['right-start'] 
-                    } 
-                },
-                { 
-                name: 'preventOverflow', 
+                name: 'flip', 
                 options: { 
-                    padding: 8,
-                    boundary: Platform.isMobile ? 'viewport' : 'clippingParents'
+                    fallbackPlacements: Platform.isMobile ? 
+                        ['bottom-start'] : ['right-start'] 
+                } 
+            },
+            { 
+                name: 'preventOverflow', 
+                enabled: Platform.isMobile,
+                options: { 
+                    boundary: 'viewport',
+                    padding: 8
                 } 
             },
             ],
