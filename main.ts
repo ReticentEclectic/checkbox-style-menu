@@ -101,6 +101,27 @@ const isValidCheckboxTarget = (target: HTMLElement): boolean => {
     return target.matches('.task-list-item-checkbox') && !target.closest('.checkbox-style-menu-widget');
 };
 
+// Shared throttle utility
+const throttle = <T extends (...args: any[]) => void>(func: T, delay: number): T => {
+    let lastCall = 0;
+    return ((...args: Parameters<T>) => {
+        const now = Date.now();
+        if (now - lastCall >= delay) {
+            lastCall = now;
+            return func(...args);
+        }
+    }) as T;
+};
+
+// NEW: Debounce utility for scroll indicator updates
+const debounce = <T extends (...args: any[]) => void>(func: T, delay: number): T => {
+    let timeoutId: NodeJS.Timeout;
+    return ((...args: Parameters<T>) => {
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => func(...args), delay);
+    }) as T;
+};
+
 /**
  * OVERLAY MANAGEMENT
  */
@@ -112,21 +133,24 @@ class OverlayManager {
         this.remove();
         
         const rect = checkbox.getBoundingClientRect();
+        const editorContainer = checkbox.closest('.cm-editor')!;
+        const editorRect = editorContainer.getBoundingClientRect();
+        
         this.overlayElement = document.createElement('div');
         this.overlayElement.className = 'checkbox-overlay';
         
         Object.assign(this.overlayElement.style, {
-            position: 'fixed',
-            top: `${rect.top}px`,
-            left: `${rect.left}px`,
+            position: 'absolute', // Changed from 'fixed'
+            top: `${rect.top - editorRect.top}px`, // Relative to editor
+            left: `${rect.left - editorRect.left}px`, // Relative to editor
             width: `${rect.width}px`,
             height: `${rect.height}px`,
-            zIndex: '999',
+            zIndex: '499',
             pointerEvents: 'auto'
         });
         
         this.setupEventListeners();
-        document.body.appendChild(this.overlayElement);
+        editorContainer.appendChild(this.overlayElement);
         return this.overlayElement;
     }
 
@@ -150,9 +174,9 @@ class OverlayManager {
                     { signal, passive: false });
             });
 
-        // Desktop: Temporarily disable pointer events during scroll
+        // In OverlayManager.setupEventListeners(), replace the setupScrollPassthrough call with:
         if (!Platform.isMobile) {
-            const throttledWheelHandler = this.throttle(() => {
+            const throttledHandler = throttle(() => {
                 if (this.overlayElement) {
                     this.overlayElement.style.pointerEvents = 'none';
                     setTimeout(() => {
@@ -163,7 +187,7 @@ class OverlayManager {
                 }
             }, 16);
 
-            this.overlayElement.addEventListener('wheel', throttledWheelHandler, { signal });
+            this.overlayElement.addEventListener('wheel', throttledHandler, { signal });
 
             // Remove overlay on mouse leave
             this.overlayElement.addEventListener('mouseleave', () => {
@@ -188,17 +212,6 @@ class OverlayManager {
         }
     }
 
-    private throttle<T extends (...args: any[]) => void>(func: T, delay: number): T {
-        let lastCall = 0;
-        return ((...args: Parameters<T>) => {
-            const now = Date.now();
-            if (now - lastCall >= delay) {
-                lastCall = now;
-                return func(...args);
-            }
-        }) as T;
-    }
-
     remove() {
         this.abortController?.abort();
         this.abortController = null;
@@ -218,7 +231,6 @@ class CheckboxStyleWidget {
     private popperInstance: PopperInstance | null = null;
     private menuTimeout: NodeJS.Timeout | null = null;
     private abortController: AbortController | null = null;
-    private enabledStyles: Array<{ symbol: string; description: string; enabled: boolean }> | null = null;
     private cleanupScrollIndicators?: () => void;
 
     constructor(
@@ -247,14 +259,16 @@ class CheckboxStyleWidget {
         this.menuElement.className = 'checkbox-style-menu-widget';
         this.menuElement.setAttribute('role', 'menu');
 
-        const enabledStyles = this.getEnabledStyles();
+        // UPDATED: Use cached enabled styles from plugin
+        const enabledStyles = this.plugin.getEnabledStyles();
         if (enabledStyles.length === 0) {
             this.menuElement.textContent = 'No styles enabled';
         } else {
             await this.renderMenuContent(enabledStyles);
         }
         
-        document.body.appendChild(this.menuElement);
+        const editorContainer = this.targetElement.closest('.cm-editor')!;
+        editorContainer.appendChild(this.menuElement);
     }
 
     private setupPopper() {
@@ -276,15 +290,15 @@ class CheckboxStyleWidget {
                     fallbackPlacements: Platform.isMobile ? 
                         ['bottom-start'] : ['right-start'] 
                 } 
-            },
-            { 
-                name: 'preventOverflow', 
-                enabled: Platform.isMobile,
-                options: { 
-                    boundary: 'viewport',
-                    padding: 8
-                } 
-            },
+                },
+                { 
+                    name: 'preventOverflow', 
+                    enabled: Platform.isMobile,
+                    options: { 
+                        boundary: 'viewport',
+                        padding: 8
+                    } 
+                },
             ],
         };
 
@@ -297,28 +311,34 @@ class CheckboxStyleWidget {
         const ul = this.menuElement.querySelector('ul');
         if (!ul) return;
 
+        // UPDATED: Use debounced scroll updates for better performance
         const updateScrollIndicators = () => {
-            const { scrollLeft, scrollWidth, clientWidth } = ul;
-            const canScrollLeft = scrollLeft > 5; // Small threshold to account for rounding
-            const canScrollRight = scrollLeft < scrollWidth - clientWidth - 5;
+            requestAnimationFrame(() => {
+                if (!ul || !this.menuElement) return; // Check if still valid
+                
+                const { scrollLeft, scrollWidth, clientWidth } = ul;
+                const canScrollLeft = scrollLeft > 5; // Small threshold to account for rounding
+                const canScrollRight = scrollLeft < scrollWidth - clientWidth - 5;
 
-            this.menuElement!.classList.toggle('has-scroll-left', canScrollLeft);
-            this.menuElement!.classList.toggle('has-scroll-right', canScrollRight);
+                this.menuElement.classList.toggle('has-scroll-left', canScrollLeft);
+                this.menuElement.classList.toggle('has-scroll-right', canScrollRight);
+            });
         };
 
-        // Initial check
+        // Initial check (immediate)
         setTimeout(updateScrollIndicators, 50);
 
-        // Update on scroll
-        ul.addEventListener('scroll', updateScrollIndicators, { passive: true });
+        // Debounced scroll updates (16ms = ~60fps)
+        const debouncedScrollUpdate = debounce(updateScrollIndicators, 16);
+        ul.addEventListener('scroll', debouncedScrollUpdate, { passive: true });
 
-        // Update on resize (if content changes)
+        // Immediate resize updates (resize is less frequent)
         const resizeObserver = new ResizeObserver(updateScrollIndicators);
         resizeObserver.observe(ul);
 
         // Clean up when widget is destroyed
         this.cleanupScrollIndicators = () => {
-            ul.removeEventListener('scroll', updateScrollIndicators);
+            ul.removeEventListener('scroll', debouncedScrollUpdate);
             resizeObserver.disconnect();
         };
     }
@@ -343,13 +363,6 @@ class CheckboxStyleWidget {
         });
     }
 
-    private getEnabledStyles() {
-        if (!this.enabledStyles) {
-            this.enabledStyles = this.plugin.checkboxStyles.filter(style => style.enabled);
-        }
-        return this.enabledStyles;
-    }
-
     private setupEventListeners(view: EditorView) {
         if (!this.menuElement) return;
 
@@ -367,6 +380,22 @@ class CheckboxStyleWidget {
                     this.handleStyleSelection(view, li);
                 }
             }, { signal });
+
+            const throttledHandler = throttle(() => {
+                if (this.menuElement) {
+                    this.menuElement.style.pointerEvents = 'none';
+                    setTimeout(() => {
+                        if (this.menuElement) {
+                            this.menuElement.style.pointerEvents = 'auto';
+                        }
+                    }, 10);
+                }
+            }, 16);
+
+            const editorContainer = this.menuElement.closest('.cm-editor');
+            if (editorContainer) {
+                editorContainer.addEventListener('wheel', throttledHandler, { signal });
+            }
         }
 
         this.setupTimeoutHandling(view, signal);
@@ -433,7 +462,8 @@ class CheckboxStyleWidget {
 
     private handleStyleSelection(view: EditorView, li: HTMLElement) {
         const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
-        const symbol = this.getEnabledStyles()[index].symbol;
+        // UPDATED: Use cached enabled styles from plugin
+        const symbol = this.plugin.getEnabledStyles()[index].symbol;
         
         if (this.plugin.settings.enableHapticFeedback) {
             triggerHapticFeedback();
@@ -493,7 +523,6 @@ class CheckboxStyleWidget {
 
     destroy() {
         this.cleanup();
-        this.enabledStyles = null;
     }
 }
 
@@ -685,6 +714,9 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
 export default class CheckboxStyleMenuPlugin extends Plugin {
     settings!: CheckboxStyleSettings;
     public checkboxStyles = CHECKBOX_STYLES.map(style => ({ ...style, enabled: false }));
+    
+    // NEW: Cache for enabled styles
+    private cachedEnabledStyles: Array<{ symbol: string; description: string; enabled: boolean }> | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -699,10 +731,21 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         console.log('Unloaded Checkbox Style Menu');
     }
 
+    // NEW: Public method to get cached enabled styles
+    getEnabledStyles(): Array<{ symbol: string; description: string; enabled: boolean }> {
+        if (!this.cachedEnabledStyles) {
+            this.cachedEnabledStyles = this.checkboxStyles.filter(style => style.enabled);
+        }
+        return this.cachedEnabledStyles;
+    }
+
     private updateCheckboxStyles() {
         this.checkboxStyles.forEach(style => {
             style.enabled = this.settings.styles[style.symbol] ?? false;
         });
+        
+        // NEW: Invalidate cache when styles change
+        this.cachedEnabledStyles = null;
     }
 
     private registerEditorExtensions() {
