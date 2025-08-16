@@ -31,7 +31,7 @@
    Overlay Styles
    ========================= */
 .checkbox-overlay {
-    background: rgba(219, 114, 102, 0.3);
+    background: transparent;
     border-radius: 2px;
     cursor: default;
     pointer-events: auto;
@@ -104,10 +104,10 @@
     --menu-padding: 6px 4px;
     
     min-width: 44px;
-    max-width: calc(100vw - 32px);
     overflow: visible;
     white-space: nowrap;
     position: relative;
+    width: auto; /* Width will be set dynamically by JavaScript */
 }
 
 .is-mobile .checkbox-style-menu-widget ul {
@@ -118,6 +118,9 @@
     -ms-overflow-style: none;
     scroll-behavior: smooth;
     -webkit-overflow-scrolling: touch;
+    width: 100%; /* Allow the ul to expand to fill available space */
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .is-mobile .checkbox-style-menu-widget ul::-webkit-scrollbar {

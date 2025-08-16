@@ -123,35 +123,88 @@ const debounce = <T extends (...args: any[]) => void>(func: T, delay: number): T
 };
 
 /**
- * OVERLAY MANAGEMENT
+ * OVERLAY MANAGEMENT WITH POPPER.JS INTEGRATION
  */
 class OverlayManager {
     private overlayElement: HTMLElement | null = null;
     private abortController: AbortController | null = null;
+    private popperInstance: PopperInstance | null = null;
 
     create(checkbox: HTMLElement): HTMLElement {
         this.remove();
         
-        const rect = checkbox.getBoundingClientRect();
         const editorContainer = checkbox.closest('.cm-editor')!;
-        const editorRect = editorContainer.getBoundingClientRect();
         
         this.overlayElement = document.createElement('div');
         this.overlayElement.className = 'checkbox-overlay';
         
+        // Initial styling - Popper will handle positioning
         Object.assign(this.overlayElement.style, {
-            position: 'absolute', // Changed from 'fixed'
-            top: `${rect.top - editorRect.top}px`, // Relative to editor
-            left: `${rect.left - editorRect.left}px`, // Relative to editor
-            width: `${rect.width}px`,
-            height: `${rect.height}px`,
+            position: 'absolute',
+            width: `${checkbox.offsetWidth}px`,
+            height: `${checkbox.offsetHeight}px`,
             zIndex: '499',
             pointerEvents: 'auto'
         });
         
-        this.setupEventListeners();
+        // Append to editor container
         editorContainer.appendChild(this.overlayElement);
+        
+        // Set up Popper.js to keep overlay positioned over checkbox
+        this.setupPopper(checkbox);
+        this.setupEventListeners();
+        
         return this.overlayElement;
+    }
+
+    private setupPopper(checkbox: HTMLElement) {
+        if (!this.overlayElement) return;
+
+        this.popperInstance = createPopper(checkbox, this.overlayElement, {
+            placement: 'top-start', // This will be overridden by our custom modifier
+            strategy: 'absolute',
+            modifiers: [
+                {
+                    name: 'exactOverlay',
+                    enabled: true,
+                    phase: 'main',
+                    fn: ({ state }) => {
+                        // Position overlay exactly over the reference element
+                        const { reference } = state.rects;
+                        state.modifiersData.popperOffsets = {
+                            x: state.rects.reference.x,
+                            y: state.rects.reference.y,
+                        };
+                    },
+                },
+                {
+                    name: 'preventOverflow',
+                    enabled: false,
+                },
+                {
+                    name: 'flip',
+                    enabled: false,
+                },
+                {
+                    name: 'offset',
+                    enabled: false, // Disabled since we're handling positioning manually
+                },
+                {
+                    name: 'computeStyles',
+                    options: {
+                        adaptive: false,
+                        roundOffsets: false,
+                    },
+                },
+                {
+                    name: 'eventListeners',
+                    options: {
+                        scroll: true,
+                        resize: true,
+                    },
+                },
+            ],
+        });
     }
 
     private setupEventListeners() {
@@ -174,8 +227,8 @@ class OverlayManager {
                     { signal, passive: false });
             });
 
-        // In OverlayManager.setupEventListeners(), replace the setupScrollPassthrough call with:
         if (!Platform.isMobile) {
+            // Desktop: Handle wheel events
             const throttledHandler = throttle(() => {
                 if (this.overlayElement) {
                     this.overlayElement.style.pointerEvents = 'none';
@@ -188,15 +241,8 @@ class OverlayManager {
             }, 16);
 
             this.overlayElement.addEventListener('wheel', throttledHandler, { signal });
-
-            // Remove overlay on mouse leave
-            this.overlayElement.addEventListener('mouseleave', () => {
-                this.remove();
-            }, { signal, passive: true });
-        }
-
-        // Mobile: Remove overlay when scrolling starts
-        if (Platform.isMobile) {
+        } else {
+            // Mobile: Remove overlay when scrolling starts
             let startY = 0;
             
             this.overlayElement.addEventListener('touchstart', (e: TouchEvent) => {
@@ -210,11 +256,26 @@ class OverlayManager {
                 }
             }, { signal });
         }
+
+        // Optional: Force Popper update on editor scroll for extra precision
+        const editorContainer = this.overlayElement.closest('.cm-editor');
+        if (editorContainer) {
+            const updateOverlay = throttle(() => {
+                this.popperInstance?.update();
+            }, 16);
+            
+            editorContainer.addEventListener('scroll', updateOverlay, { signal, passive: true });
+        }
     }
 
     remove() {
         this.abortController?.abort();
         this.abortController = null;
+        
+        if (this.popperInstance) {
+            this.popperInstance.destroy();
+            this.popperInstance = null;
+        }
         
         if (this.overlayElement) {
             this.overlayElement.remove();
@@ -275,31 +336,84 @@ class CheckboxStyleWidget {
         if (!this.menuElement) return;
 
         const placement: Placement = Platform.isMobile ? 'top-start' : 'left-start';
-        const config = {
-            placement,
-            modifiers: [
-                { 
-                    name: 'offset', 
-                    options: { 
-                        offset: Platform.isMobile ? [0, 12] : [-8, 6]
-                    } 
-                },
-                { 
+        
+        const baseModifiers = [
+            { 
+                name: 'offset', 
+                options: { 
+                    offset: Platform.isMobile ? [0, 12] : [-8, 6]
+                } 
+            },
+            { 
                 name: 'flip', 
                 options: { 
                     fallbackPlacements: Platform.isMobile ? 
                         ['bottom-start'] : ['right-start'] 
                 } 
-                },
-                { 
-                    name: 'preventOverflow', 
-                    enabled: Platform.isMobile,
-                    options: { 
-                        boundary: 'viewport',
-                        padding: 8
-                    } 
-                },
-            ],
+            },
+            { 
+                name: 'preventOverflow', 
+                enabled: Platform.isMobile,
+                options: { 
+                    boundary: 'viewport'
+                } 
+            },
+        ];
+
+        // Add mobile alignment modifier separately to avoid type conflicts
+        const mobileAlignModifier = Platform.isMobile ? [{
+            name: 'mobileCheckboxAlign',
+            enabled: true,
+            phase: 'main' as const,
+            fn: (data: { state: any }) => {
+                // Wait for DOM to be ready
+                requestAnimationFrame(() => {
+                    const ul = this.menuElement?.querySelector('ul');
+                    const firstLi = ul?.querySelector('li:first-child');
+                    const firstCheckbox = firstLi?.querySelector('.task-list-item-checkbox');
+                    
+                    if (firstCheckbox && this.menuElement && ul) {
+                        // Get the center position of the first checkbox relative to the menu
+                        const checkboxRect = firstCheckbox.getBoundingClientRect();
+                        const checkboxCenterX = checkboxRect.left + (checkboxRect.width / 2);
+                        const targetRect = this.targetElement.getBoundingClientRect();
+                        const targetCenterX = targetRect.left + (targetRect.width / 2);
+                        
+                        // Calculate the offset needed to align checkbox centers
+                        const offsetX = targetCenterX - checkboxCenterX;
+                        
+                        // Apply the offset to the menu position
+                        const currentX = parseFloat(this.menuElement.style.left) || 0;
+                        const newX = currentX + offsetX;
+                        this.menuElement.style.left = `${newX}px`;
+                        
+                        // Find the content line boundaries
+                        const targetLine = this.targetElement.closest('.cm-line');
+                        
+                        if (targetLine) {
+                            const lineRect = targetLine.getBoundingClientRect();
+                            const availableWidth = lineRect.right - newX;
+                            
+                            // Set maximum width for the menu
+                            if (availableWidth > 0) {
+                                this.menuElement.style.maxWidth = `${availableWidth}px`;
+                                this.menuElement.style.width = `auto`;
+                                
+                                // Force the ul to respect the container width
+                                ul.style.maxWidth = '100%';
+                                ul.style.width = 'auto';
+                            }
+                        }
+                    }
+                });
+                
+                return data.state;
+            }
+        }] : [];
+
+        const config = {
+            placement,
+            modifiers: [...baseModifiers, ...mobileAlignModifier],
         };
 
         this.popperInstance = createPopper(this.targetElement, this.menuElement, config);
@@ -368,6 +482,18 @@ class CheckboxStyleWidget {
 
         this.abortController = new AbortController();
         const signal = this.abortController.signal;
+
+        // Add screen rotation handler for mobile
+        if (Platform.isMobile) {
+            window.addEventListener('orientationchange', () => {
+                this.hide(view);
+            }, { signal });
+            
+            // Listen for resize as a fallback for orientation changes
+            window.addEventListener('resize', () => {
+                this.hide(view);
+            }, { signal });
+        }
 
         if (Platform.isMobile) {
             this.setupTouchHandling(view, signal);
