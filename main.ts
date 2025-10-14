@@ -1,4 +1,4 @@
-import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice } from 'obsidian';
+import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice, debounce } from 'obsidian';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { StateField, StateEffect } from '@codemirror/state';
 import { createPopper, Instance as PopperInstance, Placement } from '@popperjs/core';
@@ -148,18 +148,6 @@ const throttle = <T extends (...args: any[]) => void>(func: T, delay: number): T
             lastCall = now;
             return func(...args);
         }
-    }) as T;
-};
-
-/** 
- * Debounce utility for reducing event noise
- * Delays function execution until after events stop firing (useful for scroll indicators)
- */
-const debounce = <T extends (...args: any[]) => void>(func: T, delay: number): T => {
-    let timeoutId: NodeJS.Timeout;
-    return ((...args: Parameters<T>) => {
-        clearTimeout(timeoutId);
-        timeoutId = setTimeout(() => func(...args), delay);
     }) as T;
 };
 
@@ -1196,7 +1184,9 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
      * Groups styles into categories and provides visual previews
      */
     private addStyleToggles(): void {
-        this.containerEl.createEl('h2', { text: 'Choose which styles to show in the menu:' });
+        new Setting(this.containerEl)
+            .setName('Choose which styles to show in the menu:')
+            .setHeading();
 
         const toggleContainer = this.containerEl.createDiv({ cls: 'checkbox-style-toggles' });
 
@@ -1212,7 +1202,9 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
      * Each category gets its own heading for better organization
      */
     private addStyleCategory(container: HTMLElement, categoryName: string, styles: typeof CHECKBOX_STYLES[number][]): void {
-        container.createEl('h3', { text: categoryName });
+        new Setting(container)
+            .setName(categoryName)
+            .setHeading();
         styles.forEach(style => this.createStyleToggle(container, style));
     }
 
