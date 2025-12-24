@@ -10,10 +10,11 @@ import { createPopper, Instance as PopperInstance, Placement } from '@popperjs/c
 
 /** Configuration settings for checkbox style behavior and appearance */
 interface CheckboxStyleSettings {
-    styles: { [symbol: string]: boolean };  // Which checkbox styles are enabled in the menu
-    longPressDuration: number;              // Desktop long-press duration in milliseconds
-    touchLongPressDuration: number;         // Mobile long-press duration in milliseconds
-    enableHapticFeedback: boolean;          // Whether to provide haptic feedback on mobile
+    styles: { [symbol: string]: boolean };                 // Which checkbox styles are enabled in the menu
+    triggerMethod: 'long-press' | 'right-click' | 'both';  // How to trigger the menu
+    longPressDuration: number;                             // Desktop long-press duration in milliseconds
+    touchLongPressDuration: number;                        // Mobile long-press duration in milliseconds
+    enableHapticFeedback: boolean;                         // Whether to provide haptic feedback on mobile
 }
 
 /** Internal state for tracking user interactions (mouse/touch events) */
@@ -77,6 +78,7 @@ const DEFAULT_SETTINGS: CheckboxStyleSettings = {
     styles: Object.fromEntries(
         CHECKBOX_STYLES.map(style => [style.symbol, [' ', '/', 'x', '-'].includes(style.symbol)])
     ),
+triggerMethod: 'both',             // Default to both methods for maximum flexibility
     longPressDuration: 350,        // Desktop: shorter duration for precise mouse control
     touchLongPressDuration: 500,   // Mobile: longer duration to avoid accidental activation
     enableHapticFeedback: true,
@@ -811,7 +813,7 @@ const pluginInstanceField = StateField.define<CheckboxStyleMenuPlugin | null>({
 
 /**
  * INTERACTION HANDLER
- * Detects long-press gestures on checkboxes and triggers the style menu
+ * Detects long-press and right-click gestures on checkboxes and triggers the style menu
  * Handles both mouse (desktop) and touch (mobile) input methods
  */
 class InteractionHandler {
@@ -824,8 +826,10 @@ class InteractionHandler {
 
     /**
      * Registers platform-appropriate event listeners
-     * Desktop: mousedown/mouseup for precise cursor interaction
+     * Desktop: mousedown/mouseup for long-press + contextmenu for right-click
      * Mobile: touchstart/touchend/touchmove for finger-friendly gestures
+     * 
+     * On desktop, checks settings dynamically so changes take effect immediately
      */
     private setupEventListeners() {
         this.abortController = new AbortController();
@@ -838,6 +842,7 @@ class InteractionHandler {
         } else {
             this.view.dom.addEventListener('mousedown', this.handleMouseDown.bind(this), { signal });
             this.view.dom.addEventListener('mouseup', this.handleMouseUp.bind(this), { signal });
+            this.view.dom.addEventListener('contextmenu', this.handleContextMenu.bind(this), { signal });
         }
     }
 
@@ -858,46 +863,58 @@ class InteractionHandler {
 
     /**
      * Handles successful long-press detection
-     * Creates overlay to prevent normal checkbox behavior and shows the style menu
+     * Delegates to the centralized menu trigger method
      */
     private handleLongPress(target: HTMLElement) {
-        try {
-            // Convert DOM element position to document position
-            const pos = this.view.posAtDOM(target);
-            if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
+        const pos = this.view.posAtDOM(target);
+        if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
 
-            // Verify this is actually a checkbox line in the document
-            const line = this.view.state.doc.lineAt(pos);
-            if (!this.plugin.isCheckboxLine(line.text)) return;
-
-            // Provide haptic feedback for successful activation
-            if (this.plugin.settings.enableHapticFeedback) {
-                triggerHapticFeedback(75); // Slightly longer pulse for confirmation
-            }
-
-            // Hide any existing widget first
-            this.view.dispatch({ effects: hideWidgetEffect.of(undefined) });
-            
-            // Create overlay to intercept clicks on the original checkbox
-            const overlayManager = this.view.state.field(checkboxWidgetState).overlayManager;
-            overlayManager.create(target);
-
-            // Show the style menu widget
-            this.view.dispatch({
-                effects: showWidgetEffect.of({ pos, target, view: this.view })
-            });
-        } catch (error) {
-            console.error('Error in handleLongPress:', error);
-        }
+        // Use centralized method
+        this.plugin.showCheckboxMenu(this.view, target, pos);
     }
 
     /**
      * DESKTOP MOUSE INTERACTION HANDLERS
-     * Simpler interaction model: hold down mouse button for specified duration
+     * Handles both long-press and right-click interactions
      */
+
+    /**
+     * Handles right-click (context menu) events
+     * Only triggers on valid checkboxes, preserving default behavior elsewhere
+     * Checks settings dynamically to respect user preference
+     */
+    private handleContextMenu(event: MouseEvent) {
+        const target = event.target as HTMLElement;
+        
+        // Check if right-click is enabled in settings
+        const triggerMethod = this.plugin.settings.triggerMethod;
+        if (triggerMethod !== 'right-click' && triggerMethod !== 'both') {
+            return; // Right-click not enabled, let default behavior happen
+        }
+        
+        // Only intercept right-clicks specifically on checkboxes
+        if (isValidCheckboxTarget(target)) {
+            event.preventDefault(); // Prevent default context menu
+            event.stopPropagation(); // Prevent event bubbling
+            
+            // Cancel any pending long-press timer (if both methods enabled)
+            this.clearTimer();
+            this.state.lastTarget = null;
+            
+            // Trigger the style menu
+            this.handleLongPress(target);
+        }
+        // If not a checkbox, let the event propagate normally for default context menu
+    }
 
     private handleMouseDown(event: MouseEvent) {
         const target = event.target as HTMLElement;
+        
+        // Check if long-press is enabled in settings
+        const triggerMethod = this.plugin.settings.triggerMethod;
+        if (triggerMethod !== 'long-press' && triggerMethod !== 'both') {
+            return; // Long-press not enabled, ignore
+        }
         
         if (isValidCheckboxTarget(target)) {
             this.state.lastTarget = target;
@@ -1018,12 +1035,115 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         this.updateCheckboxStyles();      // Apply loaded settings to style definitions
         this.registerEditorExtensions();  // Hook into CodeMirror
         this.addSettingTab(new CheckboxStyleSettingTab(this.app, this)); // Add settings UI
+        this.registerCommands();          // Register hotkey commands
         
         console.log('Loaded Checkbox Style Menu');
     }
 
     onunload() {
         console.log('Unloaded Checkbox Style Menu');
+    }
+
+    /**
+     * Register hotkey command
+     */
+    private registerCommands() {
+        this.addCommand({
+            id: 'open-checkbox-style-menu',
+            name: 'Open checkbox style menu',
+            editorCallback: (editor, view) => {
+                this.openMenuAtCursor(editor, view);
+            }
+        });
+    }
+
+    /**
+     * Central method to show the checkbox style menu
+     * Used by all trigger methods: long-press, right-click, and hotkey
+     * 
+     * @param view - The CodeMirror EditorView
+     * @param target - The checkbox DOM element to show menu for
+     * @param pos - Document position of the checkbox line
+     */
+    public showCheckboxMenu(view: EditorView, target: HTMLElement, pos: number) {
+        try {
+            // Verify this is actually a checkbox line in the document
+            const line = view.state.doc.lineAt(pos);
+            if (!this.isCheckboxLine(line.text)) return;
+
+            // Provide haptic feedback for successful activation
+            if (this.settings.enableHapticFeedback) {
+                triggerHapticFeedback(75);
+            }
+
+            // Hide any existing widget first
+            view.dispatch({ effects: hideWidgetEffect.of(undefined) });
+            
+            // Create overlay to intercept clicks on the original checkbox
+            const overlayManager = view.state.field(checkboxWidgetState).overlayManager;
+            overlayManager.create(target);
+
+            // Show the style menu widget
+            view.dispatch({
+                effects: showWidgetEffect.of({ pos, target, view })
+            });
+        } catch (error) {
+            console.error('Error showing checkbox menu:', error);
+        }
+    }
+
+    /**
+     * Opens the checkbox style menu at the current cursor position
+     * Called when user triggers the hotkey command
+     */
+    private openMenuAtCursor(editor: any, view: any) {
+        const cursor = editor.getCursor();
+        const line = editor.getLine(cursor.line);
+        
+        // Check if current line contains a checkbox
+        if (!this.isCheckboxLine(line)) {
+            new Notice('No checkbox found on current line');
+            return;
+        }
+        
+        // Get the CodeMirror EditorView
+        const editorView = (view as any).editor?.cm as EditorView;
+        if (!editorView) {
+            new Notice('Unable to access editor view');
+            return;
+        }
+        
+        // Get the line position
+        const linePos = editor.posToOffset({ line: cursor.line, ch: 0 });
+        
+        // Find the checkbox element
+        const checkboxElement = this.findCheckboxElementAtPos(editorView, linePos);
+        if (!checkboxElement) {
+            new Notice('Unable to locate checkbox element');
+            return;
+        }
+        
+        // Use the centralized menu trigger
+        this.showCheckboxMenu(editorView, checkboxElement, linePos);
+    }
+
+    /**
+     * Finds the checkbox DOM element at a given document position
+     */
+    private findCheckboxElementAtPos(view: EditorView, pos: number): HTMLElement | null {
+        const domAtPos = view.domAtPos(pos);
+        let container = domAtPos.node as HTMLElement;
+        
+        // Traverse up to find the line container
+        while (container && !container.classList?.contains('cm-line')) {
+            container = container.parentElement as HTMLElement;
+        }
+        
+        if (!container) return null;
+        
+        // Find the checkbox within this line
+        const checkbox = container.querySelector('.task-list-item-checkbox');
+        return checkbox as HTMLElement | null;
     }
 
     /**
@@ -1086,10 +1206,22 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             ...data,
             // Validate each setting individually with proper fallbacks
             styles: this.validateStylesObject(data?.styles),
+            triggerMethod: this.validateTriggerMethod(data?.triggerMethod),
             longPressDuration: this.validateDuration(data?.longPressDuration, 100, 1000, 350),
             touchLongPressDuration: this.validateDuration(data?.touchLongPressDuration, 200, 1500, 500),
             enableHapticFeedback: data?.enableHapticFeedback ?? true
         };
+    }
+
+    /**
+     * Validates the trigger method setting
+     * Ensures only valid values are used
+     */
+    private validateTriggerMethod(value: any): 'long-press' | 'right-click' | 'both' {
+        if (value === 'long-press' || value === 'right-click' || value === 'both') {
+            return value;
+        }
+        return DEFAULT_SETTINGS.triggerMethod;
     }
 
     /**
@@ -1141,16 +1273,45 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     /** Main entry point: builds the entire settings UI */
     display(): void {
         this.containerEl.empty();
+        this.addTriggerMethodSetting(); // Menu trigger method selection
         this.addDurationSettings();      // Long-press timing controls
         this.addMobileSettings();        // Mobile-specific options
         this.addStyleToggles();          // Individual style enable/disable
     }
 
     /**
+     * Creates the trigger method selection dropdown
+     * Allows users to choose between long-press, right-click, or both
+     */
+    private addTriggerMethodSetting(): void {
+        new Setting(this.containerEl)
+            .setName('Menu trigger method')
+            .setDesc('Choose how to open the checkbox style menu.')
+            .addDropdown(dropdown => dropdown
+                .addOption('both', 'Both (Long-press + Right-click)')
+                .addOption('long-press', 'Long-press only')
+                .addOption('right-click', 'Right-click only')
+                .setValue(this.plugin.settings.triggerMethod)
+                .onChange(async (value: 'long-press' | 'right-click' | 'both') => {
+                    this.plugin.settings.triggerMethod = value;
+                    await this.plugin.saveSettings();
+                    
+                    // Show/hide duration settings based on selection
+                    this.display();
+                }));
+    }
+
+    /**
      * Creates duration slider controls for both desktop and mobile
      * Provides both slider and text input for precise control
+     * Only shows these settings if long-press is enabled
      */
     private addDurationSettings(): void {
+        // Only show duration settings if long-press is enabled
+        if (this.plugin.settings.triggerMethod === 'right-click') {
+            return; // Skip duration settings for right-click-only mode
+        }
+
         this.createDurationSetting(
             'Long-press duration (Desktop)',
             'Hold a checkbox this long to open its style menu.',
