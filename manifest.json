@@ -2,7 +2,7 @@
 	"id": "checkbox-style-menu",
 	"name": "Checkbox Style Menu",
 	"version": "1.0.0",
-	"minAppVersion": "1.8.10",
+	"minAppVersion": "0.15.0",
 	"description": "Provides an intuitive menu for quickly changing checkbox styles.",
 	"author": "ReticentEclectic",
 	"authorUrl": "https://github.com/ReticentEclectic",
