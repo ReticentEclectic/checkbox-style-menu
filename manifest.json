@@ -1,7 +1,7 @@
 {
 	"id": "checkbox-style-menu",
 	"name": "Checkbox Style Menu",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"minAppVersion": "0.15.0",
 	"description": "Provides an intuitive menu for quickly changing checkbox styles.",
 	"author": "ReticentEclectic",
