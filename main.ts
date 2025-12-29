@@ -104,6 +104,7 @@ const showWidgetEffect = StateEffect.define<{
     pos: number;           // Document position where the checkbox was found
     target: HTMLElement;   // The actual checkbox DOM element
     view: EditorView;      // CodeMirror editor view for applying changes
+    triggeredBy: 'long-press' | 'right-click' | 'hotkey'; // How the menu was triggered
 }>({
     // Ensure the position stays valid when the document changes
     map: (val, change) => ({ 
@@ -156,8 +157,8 @@ const throttle = <T extends (...args: any[]) => void>(func: T, delay: number): T
 /**
  * TARGET CHECKBOX OVERLAY MANAGEMENT
  * Creates an invisible overlay over the target checkbox to prevent normal click behavior
- * while the style menu is open. This ensures the menu doesn't disappear when users
- * accidentally click the original checkbox.
+ * while the style menu is open. This prevents the target checkbox from getting toggled
+ * accidentally from clicks or touches while the menu is active.
  */
 class OverlayManager {
     private overlayElement: HTMLElement | null = null;
@@ -261,9 +262,11 @@ class OverlayManager {
 
         // Block all click/touch interactions on the overlay
         const preventEvent = (e: Event) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
+            e.preventDefault(); // Prevent checkbox toggle
+                if (e.type !== 'mouseup') {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
             return false;
         };
         
@@ -348,7 +351,8 @@ class CheckboxStyleWidget {
     constructor(
         private plugin: CheckboxStyleMenuPlugin, 
         private linePos: number,      // Document position of the checkbox line
-        private targetElement: HTMLElement  // The checkbox DOM element
+        private targetElement: HTMLElement,  // The checkbox DOM element
+        private triggeredBy: 'long-press' | 'right-click' | 'hotkey' // How the menu was triggered
     ) {}
 
     /** Main entry point: creates and displays the style menu */
@@ -581,8 +585,12 @@ class CheckboxStyleWidget {
         if (Platform.isMobile) {
             this.setupTouchHandling(view, signal);
         } else {
-            // Desktop: simple click handling
-            this.menuElement.addEventListener('mouseup', (e: MouseEvent) => {
+            // Desktop: Choose event based on trigger method
+            const eventType = this.triggeredBy === 'long-press'
+                ? "mouseup"
+                : "click";
+            
+            this.menuElement.addEventListener(eventType, (e: MouseEvent) => {
                 const li = (e.target as HTMLElement).closest('li');
                 if (li) {
                     e.stopPropagation();
@@ -785,12 +793,12 @@ const checkboxWidgetState = StateField.define<{
         for (let effect of tr.effects) {
             if (effect.is(showWidgetEffect)) {
                 // Show new widget (destroy any existing one first)
-                const { pos, target, view } = effect.value;
+                const { pos, target, view, triggeredBy } = effect.value;
                 const plugin = tr.state.field(pluginInstanceField);
                 if (!plugin) return state;
                 
                 widget?.destroy();
-                widget = new CheckboxStyleWidget(plugin, pos, target);
+                widget = new CheckboxStyleWidget(plugin, pos, target, triggeredBy);
                 widget.show(view);
                 
             } else if (effect.is(hideWidgetEffect)) {
@@ -869,8 +877,8 @@ class InteractionHandler {
         const pos = this.view.posAtDOM(target);
         if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
 
-        // Use centralized method
-        this.plugin.showCheckboxMenu(this.view, target, pos);
+        // Trigger with long-press method
+        this.plugin.showCheckboxMenu(this.view, target, pos, 'long-press');
     }
 
     /**
@@ -901,8 +909,11 @@ class InteractionHandler {
             this.clearTimer();
             this.state.lastTarget = null;
             
-            // Trigger the style menu
-            this.handleLongPress(target);
+            const pos = this.view.posAtDOM(target);
+            if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
+            
+            // Trigger with right-click method
+            this.plugin.showCheckboxMenu(this.view, target, pos, 'right-click');
         }
         // If not a checkbox, let the event propagate normally for default context menu
     }
@@ -1065,7 +1076,12 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
      * @param target - The checkbox DOM element to show menu for
      * @param pos - Document position of the checkbox line
      */
-    public showCheckboxMenu(view: EditorView, target: HTMLElement, pos: number) {
+    public showCheckboxMenu(
+        view: EditorView, 
+        target: HTMLElement, 
+        pos: number,
+        triggeredBy: 'long-press' | 'right-click' | 'hotkey'
+    ) {
         try {
             // Verify this is actually a checkbox line in the document
             const line = view.state.doc.lineAt(pos);
@@ -1085,7 +1101,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 
             // Show the style menu widget
             view.dispatch({
-                effects: showWidgetEffect.of({ pos, target, view })
+                effects: showWidgetEffect.of({ pos, target, view, triggeredBy })
             });
         } catch (error) {
             console.error('Error showing checkbox menu:', error);
@@ -1123,8 +1139,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             return;
         }
         
-        // Use the centralized menu trigger
-        this.showCheckboxMenu(editorView, checkboxElement, linePos);
+        // Use hotkey trigger
+        this.showCheckboxMenu(editorView, checkboxElement, linePos, 'hotkey');
     }
 
     /**
