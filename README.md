@@ -111,6 +111,31 @@ You can enable/disable any of the 22 available checkbox styles:
 - **Live-Preview Only**: Does not work in *Reading view* or *Source mode*
 - **Requires Compatible Theme:** Any theme that adds checkbox styles (e.g. [Minimal](https://github.com/kepano/obsidian-minimal) or [Things](https://github.com/colineckert/obsidian-things))
 
+## Third-Party Plugin Compatibility
+
+### Tasks Plugin Integration
+
+Optional integration with the [Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin. When enabled, Tasks can add done dates when you mark checkboxes as *complete* using the Checkbox Style Menu.
+
+#### Enabling Tasks Integration
+
+1. Install and enable the Tasks plugin
+2. Open **Settings → Community Plugins → Checkbox Style Menu**
+3. Expand the **Advanced** section
+4. Toggle on **Enable Tasks plugin integration**
+
+#### Known Limitations
+
+- **Cancelled → Complete**
+	Changing from `[-]` (cancelled) → `[x]` (complete) will not trigger a done date. This is because this transition is not part of Tasks’ normal completion workflow. To add a done date, Tasks expects the sequence `[-]` → `[ ]` → `[x]`.
+
+- **Complete → Custom State**
+	Changing from `[x]` (completed) → `any custom checkbox style` (such as `[!]`, `[?]`, or `[>]`) will not remove the done date. This is because Tasks expects the sequence `[x]` → `[ ]` to remove it.
+
+All other transitions (such as `[ ]` → `[x]`, `[!]` → `[x]`, or `[x]` → `[ ]`) work seamlessly with Tasks' done date feature.
+
+**Note:** The **Set done date on every completed task** feature must be enabled in Tasks' settings for this integration to work.
+
 ## Troubleshooting
 
 ### Menu Not Working

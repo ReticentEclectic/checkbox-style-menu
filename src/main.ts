@@ -2,6 +2,16 @@ import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, S
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { StateField, StateEffect } from '@codemirror/state';
 import { createPopper, Instance as PopperInstance, Placement } from '@popperjs/core';
+import { 
+    isTasksPluginInstalled,
+    shouldUseClickForToggle, 
+    maybeShowTasksNotice,
+    applyStyleViaClick,
+    logCompatibilityDecision,
+    validateAndFixCompatibilitySettings,
+    createCompatibilityWatcher,
+    getTasksCompatibilityUIInfo
+} from './plugin-compatibility';
 
 /**
  * INTERFACES AND TYPES
@@ -15,6 +25,8 @@ interface CheckboxStyleSettings {
     longPressDuration: number;                             // Desktop long-press duration in milliseconds
     touchLongPressDuration: number;                        // Mobile long-press duration in milliseconds
     enableHapticFeedback: boolean;                         // Whether to provide haptic feedback on mobile
+    enableTasksCompatibility: boolean;                     // Whether to integrate with Tasks plugin
+    hasShownTasksNotice: boolean;                          // Track if we've shown the one-time notice
 }
 
 /** Internal state for tracking user interactions (mouse/touch events) */
@@ -78,10 +90,12 @@ const DEFAULT_SETTINGS: CheckboxStyleSettings = {
     styles: Object.fromEntries(
         CHECKBOX_STYLES.map(style => [style.symbol, [' ', '/', 'x', '-'].includes(style.symbol)])
     ),
-triggerMethod: 'both',             // Default to both methods for maximum flexibility
-    longPressDuration: 350,        // Desktop: shorter duration for precise mouse control
-    touchLongPressDuration: 500,   // Mobile: longer duration to avoid accidental activation
-    enableHapticFeedback: true,
+    triggerMethod: 'both',             // Default to both methods for maximum flexibility
+    longPressDuration: 350,            // Desktop: shorter duration for precise mouse control
+    touchLongPressDuration: 500,       // Mobile: longer duration to avoid accidental activation
+    enableHapticFeedback: true,        // Haptic feedback on mobile enabled by default
+    enableTasksCompatibility: false,   // Off by default - user must opt-in for Tasks integration
+    hasShownTasksNotice: false,        // Haven't shown the notice yet
 };
 
 /** 
@@ -263,7 +277,7 @@ class OverlayManager {
         // Block all click/touch interactions on the overlay
         const preventEvent = (e: Event) => {
             e.preventDefault(); // Prevent checkbox toggle
-                if (e.type !== 'mouseup') {
+            if (e.type !== 'mouseup') {
                 e.stopPropagation();
                 e.stopImmediatePropagation();
             }
@@ -707,7 +721,6 @@ class CheckboxStyleWidget {
         }
         
         this.applyCheckboxStyle(view, symbol);
-        this.hide(view);
     }
 
     /** Auto-dismiss timeout management */
@@ -724,10 +737,25 @@ class CheckboxStyleWidget {
     }
 
     /**
-     * Updates the checkbox symbol in the document
-     * Uses CodeMirror's transaction system for proper undo/redo support
+     * Gets the current checkbox symbol from the line
+     * Used to determine whether a click or text change should be used
      */
-    private applyCheckboxStyle(view: EditorView, symbol: string) {
+    private getCurrentSymbol(view: EditorView): string | null {
+        const line = view.state.doc.lineAt(this.linePos);
+        const match = line.text.match(CHECKBOX_SYMBOL_REGEX);
+        return match ? match[1] : null;
+    }
+
+    /**
+     * Applies checkbox style by directly changing the markdown text
+     * 
+     * This method is used for custom checkbox symbols (like [!], [>], etc.)
+     * or when Tasks compatibility is disabled. It provides precise control
+     * over the exact symbol that gets inserted.
+     * 
+     * Uses CodeMirror's transaction system for proper undo/redo support.
+     */
+    private applyCheckboxStyleDirect(view: EditorView, symbol: string) {
         const line = view.state.doc.lineAt(this.linePos);
         
         // Validate that the line still contains a checkbox
@@ -746,7 +774,90 @@ class CheckboxStyleWidget {
         });
     }
 
-    /** Cleanup all resources when widget is destroyed */
+    /**
+     * Main checkbox style application method
+     * 
+     * Intelligently chooses between native click events and direct text changes
+     * based on the current state, target state, and Tasks compatibility setting.
+     * 
+     * Strategy:
+     * - When Tasks compatibility is enabled AND a click will work: use click
+     *   (This allows Tasks to detect the change and add done dates)
+     * - For all other cases: use direct text change
+     *   (This gives precise control over the symbol)
+     * 
+     * The compatibility module handles the complex logic of determining when
+     * clicks will produce the correct result based on Obsidian's native behavior.
+     */
+    private applyCheckboxStyle(view: EditorView, symbol: string) {
+        const currentSymbol = this.getCurrentSymbol(view);
+        
+        if (!currentSymbol) {
+            console.error('Checkbox Style Menu: Could not determine current symbol');
+            return;
+        }
+
+        // No-op case: user selected the current state
+        // Just dismiss the menu without making any changes
+        if (currentSymbol === symbol) {
+            console.log('Checkbox Style Menu: No change needed (already at target state)');
+            this.hide(view);
+            return;
+        }
+
+        // Show the one-time Tasks integration notice if appropriate
+        // This is delegated to the compatibility module
+        maybeShowTasksNotice(
+            this.plugin.app,
+            symbol,
+            {
+                enableTasksCompatibility: this.plugin.settings.enableTasksCompatibility,
+                hasShownTasksNotice: this.plugin.settings.hasShownTasksNotice
+            },
+            async () => {
+                this.plugin.settings.hasShownTasksNotice = true;
+                await this.plugin.saveSettings();
+            }
+        );
+
+        // IMPORTANT: Determine if Tasks plugin is actually installed and active before proceeding
+        // Do not rely on enableTasksCompatibility alone
+        // Editor extensions can outlive plugin enable/disable events
+        const tasksActuallyAvailable =
+            this.plugin.settings.enableTasksCompatibility &&
+            isTasksPluginInstalled(this.plugin.app);
+
+        // Use the compatibility module to determine the best approach
+        // This encapsulates all the complex logic about when clicks work
+        const useClick = shouldUseClickForToggle(
+            currentSymbol,
+            symbol,
+            tasksActuallyAvailable
+        );
+
+        // Optional: Log the decision for debugging purposes
+        logCompatibilityDecision(currentSymbol, symbol, useClick, false);
+
+        if (useClick) {
+            // Delegate to compatibility module for click-based application
+            const overlayManager = view.state.field(checkboxWidgetState).overlayManager;
+            applyStyleViaClick(this.targetElement, overlayManager);
+            
+            // Hide menu after short delay to allow click to process
+            setTimeout(() => {
+                this.hide(view);
+            }, 20);
+        } else {
+            // Use direct text change for precise control
+            this.applyCheckboxStyleDirect(view, symbol);
+            this.hide(view);
+        }
+    }
+
+    /**
+     * Cleanup all resources when widget is destroyed
+     * Ensures no memory leaks or orphaned event listeners
+     */
     private cleanup() {
         this.clearTimeout();
         this.abortController?.abort();
@@ -1043,6 +1154,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
 
     async onload() {
         await this.loadSettings();
+        this.validateCompatibilitySettings(); // Check compatibility settings on load
+        this.registerCompatibilityWatcher(); // Watch for plugin enable/disables
         this.updateCheckboxStyles();      // Apply loaded settings to style definitions
         this.registerEditorExtensions();  // Hook into CodeMirror
         this.addSettingTab(new CheckboxStyleSettingTab(this.app, this)); // Add settings UI
@@ -1056,7 +1169,54 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     }
 
     /**
-     * Register hotkey command
+     * Validates compatibility settings on plugin load
+     * 
+     * Automatically disables Tasks integration if Tasks plugin is not available.
+     * This prevents invalid states where compatibility is enabled but Tasks is missing,
+     * which would cause incorrect checkbox behavior.
+     * 
+     * This check runs:
+     * - When the plugin loads (on Obsidian startup)
+     * - When settings are opened (in the settings UI)
+     * 
+     * This ensures compatibility is always disabled if Tasks is unavailable,
+     * even if the user never opens the settings panel.
+     */
+    private validateCompatibilitySettings(): void {
+        const { wasChanged } = validateAndFixCompatibilitySettings(
+            this.settings,
+            this.app
+        );
+
+        // Save if changes were made
+        if (wasChanged) {
+            this.saveSettings();
+            // Don't show a notice on startup - only in settings UI
+            // This avoids annoying users every time they start Obsidian
+        }
+    }
+
+    /**
+     * Watch for Obsidian layout changes to detect plugin enable/disables
+     * Ensures 3rd-party compatibility settings remain valid
+     */
+    private registerCompatibilityWatcher() {
+        const watcherCallback = createCompatibilityWatcher(
+            this.app,
+            this.settings,
+            async () => {
+                await this.saveSettings();
+            }
+        );
+
+        this.registerEvent(
+            this.app.workspace.on('layout-change', watcherCallback)
+        );
+    }
+
+    /**
+     * Register hotkey command to open menu at cursor
+     * Allows users to trigger the menu via keyboard shortcut
      */
     private registerCommands() {
         this.addCommand({
@@ -1075,6 +1235,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
      * @param view - The CodeMirror EditorView
      * @param target - The checkbox DOM element to show menu for
      * @param pos - Document position of the checkbox line
+     * @param triggeredBy - How the menu was activated
      */
     public showCheckboxMenu(
         view: EditorView, 
@@ -1225,7 +1386,9 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             triggerMethod: this.validateTriggerMethod(data?.triggerMethod),
             longPressDuration: this.validateDuration(data?.longPressDuration, 100, 1000, 350),
             touchLongPressDuration: this.validateDuration(data?.touchLongPressDuration, 200, 1500, 500),
-            enableHapticFeedback: data?.enableHapticFeedback ?? true
+            enableHapticFeedback: data?.enableHapticFeedback ?? true,
+            enableTasksCompatibility: data?.enableTasksCompatibility ?? false,
+            hasShownTasksNotice: data?.hasShownTasksNotice ?? false
         };
     }
 
@@ -1282,6 +1445,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
  * Integrates with Obsidian's settings system and provides live preview
  */
 class CheckboxStyleSettingTab extends PluginSettingTab {
+    private isAdvancedExpanded: boolean = false;  // Track Advanced section state
+
     constructor(app: App, private plugin: CheckboxStyleMenuPlugin) {
         super(app, plugin);
     }
@@ -1293,6 +1458,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         this.addDurationSettings();      // Long-press timing controls
         this.addMobileSettings();        // Mobile-specific options
         this.addStyleToggles();          // Individual style enable/disable
+        this.addAdvancedSection();       // Advanced settings (collapsible)
     }
 
     /**
@@ -1372,6 +1538,106 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
         this.addStyleCategory(toggleContainer, 'Extras', CHECKBOX_STYLES.slice(6));     // Extended/specialized states
 
         this.addResetButton(); // Convenience function to restore defaults
+    }
+
+    /**
+     * Creates the Advanced settings section (collapsible)
+     * 
+     * This section contains advanced/optional features that most users
+     * won't need to adjust. It's collapsed by default to avoid overwhelming
+     * users with too many options.
+     */
+    private addAdvancedSection(): void {
+        // Create collapsible section using Obsidian's standard pattern
+        const advancedSetting = new Setting(this.containerEl)
+            .setName('Advanced')
+            .setHeading()
+            .setClass('checkbox-style-menu-advanced-heading');
+
+        // Add collapsed class by default
+        advancedSetting.settingEl.addClass('checkbox-style-menu-collapsible');
+        
+        // Create the collapsible content container
+        const contentEl = this.containerEl.createDiv('checkbox-style-menu-collapsible-content');
+        
+        // Restore previous expanded state or default to collapsed
+        contentEl.style.display = this.isAdvancedExpanded ? 'block' : 'none';
+
+        // Toggle functionality
+        advancedSetting.settingEl.addEventListener('click', () => {
+            const isCollapsed = contentEl.style.display === 'none';
+            contentEl.style.display = isCollapsed ? 'block' : 'none';
+            advancedSetting.settingEl.toggleClass('is-collapsed', !isCollapsed);
+            this.isAdvancedExpanded = isCollapsed; // Track state
+        });
+
+        // Set initial collapsed state
+        advancedSetting.settingEl.toggleClass('is-collapsed', !this.isAdvancedExpanded);
+
+        // Add the compatibility settings inside the collapsible content
+        this.addCompatibilitySettings(contentEl);
+    }
+
+    /**
+     * Adds Tasks plugin compatibility settings
+     * Now contained within the Advanced collapsible section
+     * Uses the compatibility module to get UI information
+     * 
+     * @param container - The container element to add settings to
+     */
+    private addCompatibilitySettings(container: HTMLElement): void {
+        // Subheading for plugin compatibility
+        new Setting(container)
+            .setName('Plugin Compatibility')
+            .setHeading();
+
+        // Validate compatibility settings using the compatibility module
+        const { wasChanged } = validateAndFixCompatibilitySettings(
+            this.plugin.settings,
+            this.app
+        );
+
+        // Show notice only in settings UI if changes were made (not on startup)
+        if (wasChanged) {
+            this.plugin.saveSettings();
+            new Notice(
+                'Tasks plugin compatibility has been disabled because Tasks plugin is not detected.'
+            );
+        }
+
+        // Get UI info from compatibility module
+        const uiInfo = getTasksCompatibilityUIInfo(this.app);
+
+        // Info box with status and details
+        const infoDiv = container.createDiv();
+        infoDiv.style.marginBottom = '1em';
+        infoDiv.style.padding = '12px';
+        infoDiv.style.border = '1px solid var(--background-modifier-border)';
+        infoDiv.style.borderRadius = '5px';
+        infoDiv.style.backgroundColor = 'var(--background-secondary)';
+        infoDiv.innerHTML = `
+            <p style="margin-top: 0;"><strong>${uiInfo.statusMessage}</strong></p>
+            <p style="margin-bottom: 0;">${uiInfo.detailMessage}</p>
+        `;
+
+        // Only show toggle when appropriate (determined by compatibility module)
+        if (uiInfo.showToggle) {
+            new Setting(container)
+                .setName('Enable Tasks plugin integration')
+                .setDesc('Allows Tasks to add done dates when a checkbox is marked complete via the Checkbox Style Menu.')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.enableTasksCompatibility)
+                    .onChange(async (value) => {
+                        this.plugin.settings.enableTasksCompatibility = value;
+                        await this.plugin.saveSettings();
+                        
+                        if (value) {
+                            new Notice('Tasks integration enabled!');
+                        } else {
+                            new Notice('Tasks integration disabled.');
+                        }
+                    }));
+        }
     }
 
     /**

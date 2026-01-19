@@ -219,3 +219,56 @@
         transform: scale(1.2);
     }
 }
+
+/* =========================
+   Advanced Section Collapsible
+   ========================= */
+
+/* Make the Advanced heading clickable and add arrow indicator */
+.checkbox-style-menu-collapsible {
+    cursor: pointer;
+    user-select: none;
+}
+
+.checkbox-style-menu-collapsible .setting-item-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Add dropdown arrow using pseudo-element */
+.checkbox-style-menu-collapsible .setting-item-name::before {
+    content: '';
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 6px solid var(--text-muted);
+    margin-right: 8px;
+    transition: transform 0.2s ease;
+    vertical-align: middle;
+}
+
+/* Rotate arrow when collapsed */
+.checkbox-style-menu-collapsible.is-collapsed .setting-item-name::before {
+    transform: rotate(-90deg);
+}
+
+/* Hover effect for the collapsible heading */
+.checkbox-style-menu-collapsible:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+/* Smooth transition for content expansion/collapse */
+.checkbox-style-menu-collapsible-content {
+    overflow: hidden;
+    transition: opacity 0.2s ease;
+}
+
+/* Add a subtle top border to the collapsible content */
+.checkbox-style-menu-collapsible-content {
+    border-top: 1px solid var(--background-modifier-border);
+    margin-top: 8px;
+    padding-top: 8px;
+}
