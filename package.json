@@ -1,6 +1,6 @@
 {
 	"name": "checkbox-style-menu",
-	"version": "1.1.1",
+	"version": "1.2.0",
 	"description": "Provides an intuitive menu for quickly changing checkbox styles in Obsidian (https://obsidian.md)",
 	"main": "main.js",
 	"scripts": {
