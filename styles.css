@@ -25,6 +25,9 @@
     display: flex;
     justify-content: flex-start;
     align-items: flex-start;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
 }
 
 /* =========================
@@ -108,6 +111,13 @@
     white-space: nowrap;
     position: relative;
     width: auto; /* Width will be set dynamically by JavaScript */
+}
+
+.is-mobile .checkbox-style-menu-native-gesture-guard,
+.is-mobile .checkbox-style-menu-native-gesture-guard * {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
 }
 
 .is-mobile .checkbox-style-menu-widget ul {

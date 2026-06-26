@@ -108,7 +108,7 @@ You can enable/disable any of the 22 available checkbox styles:
 - **Obsidian Version**: Requires Obsidian 0.15.0 or later
 - **Platforms**: Desktop and Mobile
 - **Note Types**: Works with any note containing markdown checkboxes
-- **Live-Preview Only**: Does not work in *Reading view* or *Source mode*
+- **View Support**: Works in *Reading view* and *Live Preview*. Does not work in *Source mode*
 - **Requires Compatible Theme:** Any theme that adds checkbox styles (e.g. [Minimal](https://github.com/kepano/obsidian-minimal) or [Things](https://github.com/colineckert/obsidian-things))
 
 ## Third-Party Plugin Compatibility

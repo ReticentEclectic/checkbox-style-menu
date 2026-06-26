@@ -1,4 +1,5 @@
-import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice, debounce } from 'obsidian';
+import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice, debounce, TFile } from 'obsidian';
+import type { MarkdownPostProcessorContext, MarkdownSectionInformation } from 'obsidian';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { StateField, StateEffect } from '@codemirror/state';
 import { createPopper, Instance as PopperInstance, Placement } from '@popperjs/core';
@@ -39,6 +40,23 @@ interface WidgetState {
         time: number;
     };
 }
+
+type CheckboxMenuTrigger = 'long-press' | 'right-click' | 'hotkey';
+
+type CheckboxMenuContext =
+    | {
+        type: 'editor';
+        view: EditorView;
+        linePos: number;
+        overlayManager: OverlayManager;
+    }
+    | {
+        type: 'preview';
+        sourcePath: string;
+        lineNumber: number;
+        overlayManager: OverlayManager;
+        onHide: () => void;
+    };
 
 /**
  * CONSTANTS AND CONFIGURATION
@@ -104,6 +122,7 @@ const DEFAULT_SETTINGS: CheckboxStyleSettings = {
  */
 const SCROLL_THRESHOLD = 10;      // Pixels of movement before canceling long-press
 const TAP_TIME_THRESHOLD = 300;   // Maximum duration for a tap vs. long-press
+const MOBILE_NATIVE_GESTURE_GUARD_RELEASE_DELAY = 1000; // Keep iOS callout suppressed after touchend
 
 /**
  * CODEMIRROR STATE EFFECTS
@@ -118,7 +137,7 @@ const showWidgetEffect = StateEffect.define<{
     pos: number;           // Document position where the checkbox was found
     target: HTMLElement;   // The actual checkbox DOM element
     view: EditorView;      // CodeMirror editor view for applying changes
-    triggeredBy: 'long-press' | 'right-click' | 'hotkey'; // How the menu was triggered
+    triggeredBy: CheckboxMenuTrigger; // How the menu was triggered
 }>({
     // Ensure the position stays valid when the document changes
     map: (val, change) => ({ 
@@ -169,6 +188,92 @@ const throttle = <T extends (...args: any[]) => void>(func: T, delay: number): T
 };
 
 /**
+ * Finds the nearest stable container for menu and overlay elements.
+ * Live Preview uses CodeMirror, while Reading view uses markdown preview DOM.
+ */
+const getCheckboxMenuContainer = (target: HTMLElement): HTMLElement => {
+    return target.closest('.cm-editor, .markdown-preview-view, .markdown-reading-view') as HTMLElement || document.body;
+};
+
+const getUniqueElements = (elements: Array<HTMLElement | null>): HTMLElement[] => {
+    const unique: HTMLElement[] = [];
+
+    elements.forEach(element => {
+        if (element && !unique.includes(element)) {
+            unique.push(element);
+        }
+    });
+
+    return unique;
+};
+
+/**
+ * Temporarily disables native mobile text selection/callout while long-pressing
+ * a checkbox. iOS can otherwise show the Copy/Look Up menu over this plugin's
+ * style menu before delayed preventDefault calls have any effect.
+ */
+class MobileNativeGestureGuard {
+    private readonly elements: HTMLElement[];
+    private readonly abortController = new AbortController();
+
+    constructor(target: HTMLElement) {
+        const line = target.closest('.cm-line, li.task-list-item, .task-list-item') as HTMLElement | null;
+        const container = getCheckboxMenuContainer(target);
+        this.elements = getUniqueElements([target, line, container]);
+
+        this.elements.forEach(element => {
+            element.classList.add('checkbox-style-menu-native-gesture-guard');
+        });
+
+        const { signal } = this.abortController;
+        document.addEventListener('selectstart', this.preventSelectionStart, { signal, capture: true });
+        document.addEventListener('selectionchange', this.clearSelection, { signal });
+        document.addEventListener('contextmenu', this.preventContextMenu, { signal, capture: true });
+
+        this.clearSelection();
+    }
+
+    clearSelection = () => {
+        const selection = window.getSelection?.();
+        if (selection && selection.rangeCount > 0) {
+            selection.removeAllRanges();
+        }
+    };
+
+    release() {
+        this.abortController.abort();
+        this.elements.forEach(element => {
+            element.classList.remove('checkbox-style-menu-native-gesture-guard');
+        });
+        this.clearSelection();
+    }
+
+    private containsEventTarget(eventTarget: EventTarget | null): boolean {
+        return eventTarget instanceof Node && this.elements.some(element => element.contains(eventTarget));
+    }
+
+    private preventSelectionStart = (event: Event) => {
+        if (!this.containsEventTarget(event.target)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+    };
+
+    private preventContextMenu = (event: Event) => {
+        if (!this.containsEventTarget(event.target)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+    };
+}
+
+const createMobileNativeGestureGuard = (target: HTMLElement): MobileNativeGestureGuard | null => {
+    return Platform.isMobile ? new MobileNativeGestureGuard(target) : null;
+};
+
+/**
  * TARGET CHECKBOX OVERLAY MANAGEMENT
  * Creates an invisible overlay over the target checkbox to prevent normal click behavior
  * while the style menu is open. This prevents the target checkbox from getting toggled
@@ -186,7 +291,7 @@ class OverlayManager {
     create(checkbox: HTMLElement): HTMLElement {
         this.remove(); // Clean up any existing overlay
         
-        const editorContainer = checkbox.closest('.cm-editor')!;
+        const container = getCheckboxMenuContainer(checkbox);
         
         // Create overlay with same dimensions as checkbox
         this.overlayElement = document.createElement('div');
@@ -200,7 +305,7 @@ class OverlayManager {
             pointerEvents: 'auto'
         });
         
-        editorContainer.appendChild(this.overlayElement);
+        container.appendChild(this.overlayElement);
         
         // Use Popper.js to keep overlay perfectly aligned with checkbox
         this.setupPopper(checkbox);
@@ -304,7 +409,7 @@ class OverlayManager {
                 }
             }, 16);
 
-            this.overlayElement.addEventListener('wheel', throttledHandler, { signal });
+            this.overlayElement.addEventListener('wheel', throttledHandler, { signal, passive: true });
         } else {
             // Mobile: Remove overlay immediately when scrolling starts
             // Mobile scrolling is more gesture-based and less precise
@@ -323,13 +428,13 @@ class OverlayManager {
         }
 
         // Extra precision: force Popper updates during editor scrolling
-        const editorContainer = this.overlayElement.closest('.cm-editor');
-        if (editorContainer) {
+        const container = this.overlayElement.closest('.cm-editor, .markdown-preview-view, .markdown-reading-view');
+        if (container) {
             const updateOverlay = throttle(() => {
                 this.popperInstance?.update();
             }, 16);
             
-            editorContainer.addEventListener('scroll', updateOverlay, { signal, passive: true });
+            container.addEventListener('scroll', updateOverlay, { signal, passive: true });
         }
     }
 
@@ -364,26 +469,32 @@ class CheckboxStyleWidget {
 
     constructor(
         private plugin: CheckboxStyleMenuPlugin, 
-        private linePos: number,      // Document position of the checkbox line
         private targetElement: HTMLElement,  // The checkbox DOM element
-        private triggeredBy: 'long-press' | 'right-click' | 'hotkey' // How the menu was triggered
+        private triggeredBy: CheckboxMenuTrigger, // How the menu was triggered
+        private context: CheckboxMenuContext
     ) {}
 
     /** Main entry point: creates and displays the style menu */
-    async show(view: EditorView) {
+    async show() {
         await this.createMenu();
         this.setupPopper();           // Position the menu relative to checkbox
         this.setupScrollIndicators(); // Add scroll hints for mobile horizontal scrolling
-        this.setupEventListeners(view);
-        this.startDismissTimeout(view, Platform.isMobile ? 3000 : 2000); // Auto-hide timer
+        this.setupEventListeners();
+        this.startDismissTimeout(Platform.isMobile ? 3000 : 2000); // Auto-hide timer
     }
 
     /** Hides the menu and cleans up all resources */
-    hide(view: EditorView) {
+    hide() {
         this.cleanup();
         // Remove any orphaned tooltips that might still be showing
         document.querySelectorAll('.tooltip, [class*="tooltip"]').forEach(el => el.remove());
-        view.dispatch({ effects: hideWidgetEffect.of(undefined) });
+
+        if (this.context.type === 'editor') {
+            this.context.view.dispatch({ effects: hideWidgetEffect.of(undefined) });
+        } else {
+            this.context.overlayManager.remove();
+            this.context.onHide();
+        }
     }
 
     /**
@@ -403,9 +514,9 @@ class CheckboxStyleWidget {
             await this.renderMenuContent(enabledStyles);
         }
         
-        // Append to editor container to ensure proper positioning context
-        const editorContainer = this.targetElement.closest('.cm-editor')!;
-        editorContainer.appendChild(this.menuElement);
+        // Append to the active editor/preview container to ensure proper positioning context
+        const container = getCheckboxMenuContainer(this.targetElement);
+        container.appendChild(this.menuElement);
     }
 
     /**
@@ -474,7 +585,7 @@ class CheckboxStyleWidget {
                         this.menuElement.style.left = `${newX}px`;
                         
                         // Constrain menu width to available line space
-                        const targetLine = this.targetElement.closest('.cm-line');
+                        const targetLine = this.targetElement.closest('.cm-line, li.task-list-item, .task-list-item');
                         
                         if (targetLine) {
                             const lineRect = targetLine.getBoundingClientRect();
@@ -577,7 +688,7 @@ class CheckboxStyleWidget {
      * Sets up all event handling for menu interaction and dismissal
      * Different strategies for mobile vs desktop input methods
      */
-    private setupEventListeners(view: EditorView) {
+    private setupEventListeners() {
         if (!this.menuElement) return;
 
         this.abortController = new AbortController();
@@ -586,18 +697,18 @@ class CheckboxStyleWidget {
         // Mobile-specific: hide menu on orientation change
         if (Platform.isMobile) {
             window.addEventListener('orientationchange', () => {
-                this.hide(view);
+                this.hide();
             }, { signal });
             
             // Fallback for devices that don't fire orientationchange
             window.addEventListener('resize', () => {
-                this.hide(view);
+                this.hide();
             }, { signal });
         }
 
         // Platform-specific interaction handling
         if (Platform.isMobile) {
-            this.setupTouchHandling(view, signal);
+            this.setupTouchHandling(signal);
         } else {
             // Desktop: Choose event based on trigger method
             const eventType = this.triggeredBy === 'long-press'
@@ -609,7 +720,7 @@ class CheckboxStyleWidget {
                 if (li) {
                     e.stopPropagation();
                     e.preventDefault();
-                    this.handleStyleSelection(view, li);
+                    this.handleStyleSelection(li);
                 }
             }, { signal });
 
@@ -626,20 +737,20 @@ class CheckboxStyleWidget {
                 }
             }, 16);
 
-            const editorContainer = this.menuElement.closest('.cm-editor');
-            if (editorContainer) {
-                editorContainer.addEventListener('wheel', throttledHandler, { signal });
+            const container = this.menuElement.closest('.cm-editor, .markdown-preview-view, .markdown-reading-view');
+            if (container) {
+                container.addEventListener('wheel', throttledHandler, { signal, passive: true });
             }
         }
 
-        this.setupTimeoutHandling(view, signal);
+        this.setupTimeoutHandling(signal);
     }
 
     /**
      * Handles touch interactions for mobile devices
      * Implements proper tap detection vs scrolling gestures
      */
-    private setupTouchHandling(view: EditorView, signal: AbortSignal) {
+    private setupTouchHandling(signal: AbortSignal) {
         if (!this.menuElement) return;
 
         let touchStart: { x: number; y: number; time: number } | null = null;
@@ -664,7 +775,7 @@ class CheckboxStyleWidget {
             if (deltaX < SCROLL_THRESHOLD && deltaY < SCROLL_THRESHOLD && duration < TAP_TIME_THRESHOLD) {
                 e.preventDefault();
                 e.stopPropagation();
-                this.handleStyleSelection(view, li);
+                this.handleStyleSelection(li);
             }
             touchStart = null;
         }, { signal, passive: false });
@@ -678,7 +789,7 @@ class CheckboxStyleWidget {
      * Handles menu auto-dismissal and outside-click behavior
      * Platform-specific timeout management for optimal UX
      */
-    private setupTimeoutHandling(view: EditorView, signal: AbortSignal) {
+    private setupTimeoutHandling(signal: AbortSignal) {
         if (!this.menuElement) return;
 
         const eventType = Platform.isMobile ? 'touchstart' : 'mousedown';
@@ -686,7 +797,7 @@ class CheckboxStyleWidget {
         // Hide menu when user interacts outside of it
         document.addEventListener(eventType, (e: Event) => {
             if (!this.menuElement?.contains(e.target as Node) && e.target !== this.targetElement) {
-                this.hide(view);
+                this.hide();
             }
         }, { signal, capture: true });
 
@@ -697,13 +808,13 @@ class CheckboxStyleWidget {
             this.menuElement.addEventListener('touchend', (e) => {
                 const li = (e.target as HTMLElement).closest('li');
                 if (!li) { // Only restart timer if user didn't select a style
-                    setTimeout(() => this.startDismissTimeout(view, 3000), 100);
+                    setTimeout(() => this.startDismissTimeout(3000), 100);
                 }
             }, { signal });
         } else {
             // Desktop: pause auto-hide while hovering
             this.menuElement.addEventListener('mouseenter', () => this.clearTimeout(), { signal });
-            this.menuElement.addEventListener('mouseleave', () => this.startDismissTimeout(view, 2000), { signal });
+            this.menuElement.addEventListener('mouseleave', () => this.startDismissTimeout(2000), { signal });
         }
     }
 
@@ -711,7 +822,7 @@ class CheckboxStyleWidget {
      * Processes a user's style selection and applies it to the checkbox
      * Provides haptic feedback and updates the document
      */
-    private handleStyleSelection(view: EditorView, li: HTMLElement) {
+    private handleStyleSelection(li: HTMLElement) {
         const index = parseInt(li.getAttribute('data-style-index') || '0', 10);
         const symbol = this.plugin.getEnabledStyles()[index].symbol;
         
@@ -720,7 +831,7 @@ class CheckboxStyleWidget {
             triggerHapticFeedback();
         }
         
-        this.applyCheckboxStyle(view, symbol);
+        void this.applyCheckboxStyle(symbol);
     }
 
     /** Auto-dismiss timeout management */
@@ -731,19 +842,26 @@ class CheckboxStyleWidget {
         }
     }
 
-    private startDismissTimeout(view: EditorView, delay: number) {
+    private startDismissTimeout(delay: number) {
         this.clearTimeout();
-        this.menuTimeout = setTimeout(() => this.hide(view), delay);
+        this.menuTimeout = setTimeout(() => this.hide(), delay);
     }
 
     /**
      * Gets the current checkbox symbol from the line
      * Used to determine whether a click or text change should be used
      */
-    private getCurrentSymbol(view: EditorView): string | null {
-        const line = view.state.doc.lineAt(this.linePos);
-        const match = line.text.match(CHECKBOX_SYMBOL_REGEX);
-        return match ? match[1] : null;
+    private async getCurrentSymbol(): Promise<string | null> {
+        if (this.context.type === 'editor') {
+            const line = this.context.view.state.doc.lineAt(this.context.linePos);
+            const match = line.text.match(CHECKBOX_SYMBOL_REGEX);
+            return match ? match[1] : null;
+        }
+
+        return this.plugin.getCheckboxSymbolAtLine(
+            this.context.sourcePath,
+            this.context.lineNumber
+        );
     }
 
     /**
@@ -755,8 +873,17 @@ class CheckboxStyleWidget {
      * 
      * Uses CodeMirror's transaction system for proper undo/redo support.
      */
-    private applyCheckboxStyleDirect(view: EditorView, symbol: string) {
-        const line = view.state.doc.lineAt(this.linePos);
+    private async applyCheckboxStyleDirect(symbol: string) {
+        if (this.context.type === 'preview') {
+            await this.plugin.updateCheckboxStyleAtLine(
+                this.context.sourcePath,
+                this.context.lineNumber,
+                symbol
+            );
+            return;
+        }
+
+        const line = this.context.view.state.doc.lineAt(this.context.linePos);
         
         // Validate that the line still contains a checkbox
         if (!this.plugin.isCheckboxLine(line.text)) return;
@@ -769,7 +896,7 @@ class CheckboxStyleWidget {
         const from = line.from + startIndex;
 
         // Create a transaction to replace just the symbol character
-        view.dispatch({
+        this.context.view.dispatch({
             changes: { from, to: from + 1, insert: symbol }
         });
     }
@@ -789,8 +916,8 @@ class CheckboxStyleWidget {
      * The compatibility module handles the complex logic of determining when
      * clicks will produce the correct result based on Obsidian's native behavior.
      */
-    private applyCheckboxStyle(view: EditorView, symbol: string) {
-        const currentSymbol = this.getCurrentSymbol(view);
+    private async applyCheckboxStyle(symbol: string) {
+        const currentSymbol = await this.getCurrentSymbol();
         
         if (!currentSymbol) {
             console.error('Checkbox Style Menu: Could not determine current symbol');
@@ -801,7 +928,7 @@ class CheckboxStyleWidget {
         // Just dismiss the menu without making any changes
         if (currentSymbol === symbol) {
             console.log('Checkbox Style Menu: No change needed (already at target state)');
-            this.hide(view);
+            this.hide();
             return;
         }
 
@@ -840,17 +967,16 @@ class CheckboxStyleWidget {
 
         if (useClick) {
             // Delegate to compatibility module for click-based application
-            const overlayManager = view.state.field(checkboxWidgetState).overlayManager;
-            applyStyleViaClick(this.targetElement, overlayManager);
+            applyStyleViaClick(this.targetElement, this.context.overlayManager);
             
             // Hide menu after short delay to allow click to process
             setTimeout(() => {
-                this.hide(view);
+                this.hide();
             }, 20);
         } else {
             // Use direct text change for precise control
-            this.applyCheckboxStyleDirect(view, symbol);
-            this.hide(view);
+            await this.applyCheckboxStyleDirect(symbol);
+            this.hide();
         }
     }
 
@@ -909,8 +1035,13 @@ const checkboxWidgetState = StateField.define<{
                 if (!plugin) return state;
                 
                 widget?.destroy();
-                widget = new CheckboxStyleWidget(plugin, pos, target, triggeredBy);
-                widget.show(view);
+                widget = new CheckboxStyleWidget(plugin, target, triggeredBy, {
+                    type: 'editor',
+                    view,
+                    linePos: pos,
+                    overlayManager
+                });
+                widget.show();
                 
             } else if (effect.is(hideWidgetEffect)) {
                 // Hide current widget and clean up overlay
@@ -938,6 +1069,8 @@ const pluginInstanceField = StateField.define<CheckboxStyleMenuPlugin | null>({
 class InteractionHandler {
     private state: WidgetState = { timer: null, lastTarget: null };
     private abortController: AbortController | null = null;
+    private mobileNativeGestureGuard: MobileNativeGestureGuard | null = null;
+    private longPressTriggered = false;
 
     constructor(private view: EditorView, private plugin: CheckboxStyleMenuPlugin) {
         this.setupEventListeners();
@@ -958,6 +1091,7 @@ class InteractionHandler {
             this.view.dom.addEventListener('touchstart', this.handleTouchStart.bind(this), { signal, passive: false });
             this.view.dom.addEventListener('touchend', this.handleTouchEnd.bind(this), { signal, passive: false });
             this.view.dom.addEventListener('touchmove', this.handleTouchMove.bind(this), { signal, passive: false });
+            this.view.dom.addEventListener('touchcancel', this.handleTouchCancel.bind(this), { signal, passive: true });
         } else {
             this.view.dom.addEventListener('mousedown', this.handleMouseDown.bind(this), { signal });
             this.view.dom.addEventListener('mouseup', this.handleMouseUp.bind(this), { signal });
@@ -968,6 +1102,7 @@ class InteractionHandler {
     /** Clean up event listeners when handler is destroyed */
     destroy() {
         this.clearTimer();
+        this.releaseMobileNativeGestureGuard();
         this.abortController?.abort();
         this.abortController = null;
     }
@@ -980,6 +1115,24 @@ class InteractionHandler {
         }
     }
 
+    private startMobileNativeGestureGuard(target: HTMLElement) {
+        this.releaseMobileNativeGestureGuard();
+        this.mobileNativeGestureGuard = createMobileNativeGestureGuard(target);
+    }
+
+    private releaseMobileNativeGestureGuard(delay = 0) {
+        const guard = this.mobileNativeGestureGuard;
+        this.mobileNativeGestureGuard = null;
+
+        if (!guard) return;
+
+        if (delay > 0) {
+            setTimeout(() => guard.release(), delay);
+        } else {
+            guard.release();
+        }
+    }
+
     /**
      * Handles successful long-press detection
      * Delegates to the centralized menu trigger method
@@ -987,6 +1140,9 @@ class InteractionHandler {
     private handleLongPress(target: HTMLElement) {
         const pos = this.view.posAtDOM(target);
         if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
+
+        this.longPressTriggered = true;
+        this.mobileNativeGestureGuard?.clearSelection();
 
         // Trigger with long-press method
         this.plugin.showCheckboxMenu(this.view, target, pos, 'long-press');
@@ -1070,6 +1226,8 @@ class InteractionHandler {
         if (isValidCheckboxTarget(target) && event.touches.length === 1) {
             const touch = event.touches[0];
             this.state.lastTarget = target;
+            this.longPressTriggered = false;
+            this.startMobileNativeGestureGuard(target);
             
             // Record initial touch data for gesture recognition
             this.state.touchStart = { 
@@ -1102,15 +1260,295 @@ class InteractionHandler {
             // If finger moved too far, this is a scroll gesture, not a long-press
             if (deltaX > SCROLL_THRESHOLD || deltaY > SCROLL_THRESHOLD) {
                 this.clearTimer();
+                this.releaseMobileNativeGestureGuard();
+                this.longPressTriggered = false;
                 this.state.lastTarget = null;
                 this.state.touchStart = undefined;
             }
         }
     }
 
-    private handleTouchEnd() {
+    private handleTouchEnd(event: TouchEvent) {
+        const wasLongPress = this.longPressTriggered;
+
+        if (wasLongPress) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+        }
+
         // Touch ended - cancel any pending long-press
         this.clearTimer();
+        this.state.lastTarget = null;
+        this.state.touchStart = undefined;
+        this.longPressTriggered = false;
+        this.releaseMobileNativeGestureGuard(wasLongPress ? MOBILE_NATIVE_GESTURE_GUARD_RELEASE_DELAY : 0);
+    }
+
+    private handleTouchCancel() {
+        this.clearTimer();
+        this.releaseMobileNativeGestureGuard();
+        this.longPressTriggered = false;
+        this.state.lastTarget = null;
+        this.state.touchStart = undefined;
+    }
+}
+
+/**
+ * READING VIEW INTERACTION HANDLER
+ * Attaches to rendered markdown blocks and maps clicked preview checkboxes
+ * back to their source file line so styles can be applied outside CodeMirror.
+ */
+class PreviewInteractionHandler extends MarkdownRenderChild {
+    private state: WidgetState = { timer: null, lastTarget: null };
+    private abortController: AbortController | null = null;
+    private mobileNativeGestureGuard: MobileNativeGestureGuard | null = null;
+    private longPressTriggered = false;
+
+    constructor(
+        containerEl: HTMLElement,
+        private context: MarkdownPostProcessorContext,
+        private plugin: CheckboxStyleMenuPlugin
+    ) {
+        super(containerEl);
+    }
+
+    onload() {
+        if (!this.context?.sourcePath) return;
+        this.setupEventListeners();
+    }
+
+    onunload() {
+        this.clearTimer();
+        this.releaseMobileNativeGestureGuard();
+        this.abortController?.abort();
+        this.abortController = null;
+    }
+
+    private setupEventListeners() {
+        this.abortController = new AbortController();
+        const { signal } = this.abortController;
+
+        if (Platform.isMobile) {
+            this.containerEl.addEventListener('touchstart', this.handleTouchStart.bind(this), { signal, passive: false });
+            this.containerEl.addEventListener('touchend', this.handleTouchEnd.bind(this), { signal, passive: false });
+            this.containerEl.addEventListener('touchmove', this.handleTouchMove.bind(this), { signal, passive: false });
+            this.containerEl.addEventListener('touchcancel', this.handleTouchCancel.bind(this), { signal, passive: true });
+        } else {
+            this.containerEl.addEventListener('mousedown', this.handleMouseDown.bind(this), { signal });
+            this.containerEl.addEventListener('mouseup', this.handleMouseUp.bind(this), { signal });
+            this.containerEl.addEventListener('contextmenu', this.handleContextMenu.bind(this), { signal });
+        }
+    }
+
+    private clearTimer() {
+        if (this.state.timer) {
+            clearTimeout(this.state.timer);
+            this.state.timer = null;
+        }
+    }
+
+    private startMobileNativeGestureGuard(target: HTMLElement) {
+        this.releaseMobileNativeGestureGuard();
+        this.mobileNativeGestureGuard = createMobileNativeGestureGuard(target);
+    }
+
+    private releaseMobileNativeGestureGuard(delay = 0) {
+        const guard = this.mobileNativeGestureGuard;
+        this.mobileNativeGestureGuard = null;
+
+        if (!guard) return;
+
+        if (delay > 0) {
+            setTimeout(() => guard.release(), delay);
+        } else {
+            guard.release();
+        }
+    }
+
+    private getCheckboxTarget(eventTarget: EventTarget | null): HTMLElement | null {
+        if (!(eventTarget instanceof HTMLElement)) return null;
+
+        const target = eventTarget.matches('.task-list-item-checkbox')
+            ? eventTarget
+            : eventTarget.closest('.task-list-item-checkbox') as HTMLElement | null;
+
+        return target && isValidCheckboxTarget(target) ? target : null;
+    }
+
+    private getDataLine(target: HTMLElement): number | null {
+        const lineElement = target.closest('li[data-line], .task-list-item[data-line]') as HTMLElement | null;
+        const rawLine = lineElement?.getAttribute('data-line');
+        if (!rawLine) return null;
+
+        const parsed = parseInt(rawLine, 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    private getSectionInfo(): MarkdownSectionInformation | null {
+        if (typeof this.context.getSectionInfo !== 'function') return null;
+
+        try {
+            const sectionInfo = this.context.getSectionInfo(this.containerEl);
+            if (
+                sectionInfo &&
+                typeof sectionInfo.text === 'string' &&
+                typeof sectionInfo.lineStart === 'number'
+            ) {
+                return sectionInfo;
+            }
+        } catch {
+            return null;
+        }
+
+        return null;
+    }
+
+    private getSourceLineForCheckbox(target: HTMLElement): number | null {
+        const dataLine = this.getDataLine(target);
+        if (dataLine !== null) return dataLine;
+
+        const sectionInfo = this.getSectionInfo();
+        if (!sectionInfo) return null;
+
+        const checkboxes = Array.from(
+            this.containerEl.querySelectorAll('.task-list-item-checkbox')
+        ) as HTMLElement[];
+        const checkboxIndex = checkboxes.indexOf(target);
+        if (checkboxIndex < 0) return null;
+
+        let currentCheckboxIndex = 0;
+        const lines = sectionInfo.text.split('\n');
+
+        for (let offset = 0; offset < lines.length; offset++) {
+            if (!this.plugin.isCheckboxLine(lines[offset])) continue;
+
+            if (currentCheckboxIndex === checkboxIndex) {
+                return sectionInfo.lineStart + offset;
+            }
+
+            currentCheckboxIndex++;
+        }
+
+        return null;
+    }
+
+    private showMenuForTarget(target: HTMLElement, triggeredBy: CheckboxMenuTrigger) {
+        const sourcePath = this.context.sourcePath;
+        const lineNumber = this.getSourceLineForCheckbox(target);
+
+        if (!sourcePath || lineNumber === null) return;
+
+        this.plugin.showPreviewCheckboxMenu(target, sourcePath, lineNumber, triggeredBy);
+    }
+
+    private handleLongPress(target: HTMLElement) {
+        this.longPressTriggered = true;
+        this.mobileNativeGestureGuard?.clearSelection();
+        this.showMenuForTarget(target, 'long-press');
+    }
+
+    private handleContextMenu(event: MouseEvent) {
+        const target = this.getCheckboxTarget(event.target);
+        if (!target) return;
+
+        const triggerMethod = this.plugin.settings.triggerMethod;
+        if (triggerMethod !== 'right-click' && triggerMethod !== 'both') {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        this.clearTimer();
+        this.state.lastTarget = null;
+        this.showMenuForTarget(target, 'right-click');
+    }
+
+    private handleMouseDown(event: MouseEvent) {
+        const target = this.getCheckboxTarget(event.target);
+        if (!target) return;
+
+        const triggerMethod = this.plugin.settings.triggerMethod;
+        if (triggerMethod !== 'long-press' && triggerMethod !== 'both') {
+            return;
+        }
+
+        this.state.lastTarget = target;
+        this.clearTimer();
+
+        this.state.timer = setTimeout(() => {
+            if (this.state.lastTarget === target) {
+                this.handleLongPress(target);
+                event.preventDefault();
+            }
+        }, this.plugin.settings.longPressDuration);
+    }
+
+    private handleMouseUp() {
+        this.clearTimer();
+        this.state.lastTarget = null;
+    }
+
+    private handleTouchStart(event: TouchEvent) {
+        const target = this.getCheckboxTarget(event.target);
+
+        if (target && event.touches.length === 1) {
+            const touch = event.touches[0];
+            this.state.lastTarget = target;
+            this.longPressTriggered = false;
+            this.startMobileNativeGestureGuard(target);
+            this.state.touchStart = {
+                x: touch.clientX,
+                y: touch.clientY,
+                time: Date.now()
+            };
+            this.clearTimer();
+
+            this.state.timer = setTimeout(() => {
+                if (this.state.lastTarget === target) {
+                    this.handleLongPress(target);
+                    event.preventDefault();
+                }
+            }, this.plugin.settings.touchLongPressDuration);
+        }
+    }
+
+    private handleTouchMove(event: TouchEvent) {
+        if (this.state.touchStart && event.touches.length === 1) {
+            const touch = event.touches[0];
+            const deltaX = Math.abs(touch.clientX - this.state.touchStart.x);
+            const deltaY = Math.abs(touch.clientY - this.state.touchStart.y);
+
+            if (deltaX > SCROLL_THRESHOLD || deltaY > SCROLL_THRESHOLD) {
+                this.clearTimer();
+                this.releaseMobileNativeGestureGuard();
+                this.longPressTriggered = false;
+                this.state.lastTarget = null;
+                this.state.touchStart = undefined;
+            }
+        }
+    }
+
+    private handleTouchEnd(event: TouchEvent) {
+        const wasLongPress = this.longPressTriggered;
+
+        if (wasLongPress) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+        }
+
+        this.clearTimer();
+        this.state.lastTarget = null;
+        this.state.touchStart = undefined;
+        this.longPressTriggered = false;
+        this.releaseMobileNativeGestureGuard(wasLongPress ? MOBILE_NATIVE_GESTURE_GUARD_RELEASE_DELAY : 0);
+    }
+
+    private handleTouchCancel() {
+        this.clearTimer();
+        this.releaseMobileNativeGestureGuard();
+        this.longPressTriggered = false;
         this.state.lastTarget = null;
         this.state.touchStart = undefined;
     }
@@ -1151,6 +1589,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
      * Invalidated whenever settings change
      */
     private cachedEnabledStyles: Array<{ symbol: string; description: string; enabled: boolean }> | null = null;
+    private previewWidget: CheckboxStyleWidget | null = null;
+    private previewOverlayManager = new OverlayManager();
 
     async onload() {
         await this.loadSettings();
@@ -1158,6 +1598,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         this.registerCompatibilityWatcher(); // Watch for plugin enable/disables
         this.updateCheckboxStyles();      // Apply loaded settings to style definitions
         this.registerEditorExtensions();  // Hook into CodeMirror
+        this.registerReadingViewSupport(); // Hook into Reading view markdown rendering
         this.addSettingTab(new CheckboxStyleSettingTab(this.app, this)); // Add settings UI
         this.registerCommands();          // Register hotkey commands
         
@@ -1165,6 +1606,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     }
 
     onunload() {
+        this.hidePreviewCheckboxMenu();
         console.log('Unloaded Checkbox Style Menu');
     }
 
@@ -1241,7 +1683,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         view: EditorView, 
         target: HTMLElement, 
         pos: number,
-        triggeredBy: 'long-press' | 'right-click' | 'hotkey'
+        triggeredBy: CheckboxMenuTrigger
     ) {
         try {
             // Verify this is actually a checkbox line in the document
@@ -1252,6 +1694,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             if (this.settings.enableHapticFeedback) {
                 triggerHapticFeedback(75);
             }
+
+            this.hidePreviewCheckboxMenu();
 
             // Hide any existing widget first
             view.dispatch({ effects: hideWidgetEffect.of(undefined) });
@@ -1357,6 +1801,116 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             checkboxViewPlugin,               // Handles user interactions
             pluginInstanceField.init(() => this)  // Provides plugin access to extensions
         ]);
+    }
+
+    /**
+     * Registers Reading view support by attaching interaction handlers to
+     * rendered markdown sections that contain task checkboxes.
+     */
+    private registerReadingViewSupport() {
+        this.registerMarkdownPostProcessor((element: HTMLElement, context: MarkdownPostProcessorContext) => {
+            if (!context.sourcePath || !element.querySelector('.task-list-item-checkbox')) return;
+
+            context.addChild(new PreviewInteractionHandler(element, context, this));
+        });
+    }
+
+    /**
+     * Central method to show the checkbox style menu from Reading view.
+     */
+    public showPreviewCheckboxMenu(
+        target: HTMLElement,
+        sourcePath: string,
+        lineNumber: number,
+        triggeredBy: CheckboxMenuTrigger
+    ) {
+        try {
+            // Provide haptic feedback for successful activation
+            if (this.settings.enableHapticFeedback) {
+                triggerHapticFeedback(75);
+            }
+
+            this.hidePreviewCheckboxMenu();
+
+            this.previewOverlayManager.create(target);
+
+            let widget: CheckboxStyleWidget;
+            widget = new CheckboxStyleWidget(this, target, triggeredBy, {
+                type: 'preview',
+                sourcePath,
+                lineNumber,
+                overlayManager: this.previewOverlayManager,
+                onHide: () => {
+                    if (this.previewWidget === widget) {
+                        this.previewWidget = null;
+                    }
+                }
+            });
+
+            this.previewWidget = widget;
+            widget.show();
+        } catch {
+            return;
+        }
+    }
+
+    /** Hides any active Reading view menu. */
+    public hidePreviewCheckboxMenu() {
+        this.previewWidget?.destroy();
+        this.previewWidget = null;
+        this.previewOverlayManager.remove();
+        document.querySelectorAll('.tooltip, [class*="tooltip"]').forEach(el => el.remove());
+    }
+
+    private getFileByPath(sourcePath: string): TFile | null {
+        const file = this.app.vault.getAbstractFileByPath(sourcePath);
+        return file instanceof TFile ? file : null;
+    }
+
+    private getCheckboxSymbolFromData(data: string, lineNumber: number): string | null {
+        const line = data.split('\n')[lineNumber];
+        if (line === undefined) return null;
+
+        const match = line.match(CHECKBOX_SYMBOL_REGEX);
+        return match ? match[1] : null;
+    }
+
+    /** Gets the current checkbox symbol at a source file line. */
+    public async getCheckboxSymbolAtLine(sourcePath: string, lineNumber: number): Promise<string | null> {
+        const file = this.getFileByPath(sourcePath);
+        if (!file) return null;
+
+        const data = await this.app.vault.read(file);
+        return this.getCheckboxSymbolFromData(data, lineNumber);
+    }
+
+    /** Replaces only the checkbox symbol at a source file line. */
+    public async updateCheckboxStyleAtLine(
+        sourcePath: string,
+        lineNumber: number,
+        symbol: string
+    ): Promise<boolean> {
+        const file = this.getFileByPath(sourcePath);
+        if (!file) return false;
+
+        let didUpdate = false;
+
+        await this.app.vault.process(file, (data) => {
+            const lines = data.split('\n');
+            const line = lines[lineNumber];
+            if (line === undefined) return data;
+
+            const match = line.match(CHECKBOX_SYMBOL_REGEX);
+            if (!match) return data;
+
+            const startIndex = match.index! + match[0].indexOf('[') + 1;
+            lines[lineNumber] = line.slice(0, startIndex) + symbol + line.slice(startIndex + 1);
+            didUpdate = true;
+
+            return lines.join('\n');
+        });
+
+        return didUpdate;
     }
 
     /**
