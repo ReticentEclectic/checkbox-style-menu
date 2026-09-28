@@ -1,7 +1,7 @@
-import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, setTooltip, Platform, Notice, debounce } from 'obsidian';
+import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, SliderComponent, TextComponent, Editor, MarkdownView, MarkdownFileInfo, setTooltip, Platform, Notice, debounce } from 'obsidian';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { StateField, StateEffect } from '@codemirror/state';
-import { createPopper, Instance as PopperInstance, Placement } from '@popperjs/core';
+import { createPopper, Instance as PopperInstance, Placement, State } from '@popperjs/core';
 import { 
     isTasksPluginInstalled,
     shouldUseClickForToggle, 
@@ -27,6 +27,8 @@ interface CheckboxStyleSettings {
     enableHapticFeedback: boolean;                         // Whether to provide haptic feedback on mobile
     enableTasksCompatibility: boolean;                     // Whether to integrate with Tasks plugin
     hasShownTasksNotice: boolean;                          // Track if we've shown the one-time notice
+    cycleEnabled: boolean;                                 // Whether to override the default click-to-toggle cycle
+    cycleStates: string[];                                 // Ordered sequence of symbols a plain click cycles through
 }
 
 /** Internal state for tracking user interactions (mouse/touch events) */
@@ -38,6 +40,20 @@ interface WidgetState {
         y: number; 
         time: number;
     };
+    cycleTarget: HTMLElement | null;    // Checkbox mousedown'd while the click-cycle is enabled
+    cycleWasLongPress: boolean;         // Whether that mousedown escalated into a long-press
+}
+
+/**
+ * Obsidian's public `Editor` type doesn't expose the underlying CodeMirror 6
+ * `EditorView` instance backing it - there's no official, documented way to get
+ * from an Editor down to the raw CM6 view. This narrow interface documents
+ * exactly the one undocumented field we depend on (openMenuAtCursor), so the
+ * rest of `Editor` stays fully type-checked instead of being opted out of
+ * checking entirely via a blanket `any` cast.
+ */
+interface EditorWithCM extends Editor {
+    cm?: EditorView;
 }
 
 /**
@@ -96,6 +112,8 @@ const DEFAULT_SETTINGS: CheckboxStyleSettings = {
     enableHapticFeedback: true,        // Haptic feedback on mobile enabled by default
     enableTasksCompatibility: false,   // Off by default - user must opt-in for Tasks integration
     hasShownTasksNotice: false,        // Haven't shown the notice yet
+    cycleEnabled: false,               // Off by default - preserves Obsidian's native [ ] <-> [x] toggle
+    cycleStates: [' ', 'x'],           // Mirrors the default cycle as a sensible starting point when enabled
 };
 
 /** 
@@ -153,11 +171,44 @@ const isValidCheckboxTarget = (target: HTMLElement): boolean => {
     return target.matches('.task-list-item-checkbox') && !target.closest('.checkbox-style-menu-widget');
 };
 
+/**
+ * Given the current checkbox symbol and a configured cycle, returns the next symbol.
+ * If the current symbol isn't part of the cycle (e.g. hand-typed, or set by another
+ * plugin), falls back to the first item in the cycle rather than getting stuck.
+ */
+const getNextCycleSymbol = (current: string, cycle: string[]): string => {
+    const idx = cycle.indexOf(current);
+    if (idx === -1) return cycle[0];
+    return cycle[(idx + 1) % cycle.length];
+};
+
+/**
+ * Writes a single checkbox symbol directly into the document at the given position.
+ * Standalone counterpart to CheckboxStyleWidget.applyCheckboxStyleDirect, used by the
+ * click-to-cycle feature which has no widget/menu instance to operate through.
+ * Returns false (no-op) if the position isn't actually on a checkbox line.
+ */
+const writeCheckboxSymbolAtPos = (view: EditorView, pos: number, symbol: string): boolean => {
+    const line = view.state.doc.lineAt(pos);
+    if (!CHECKBOX_REGEX.test(line.text)) return false;
+
+    const match = line.text.match(CHECKBOX_SYMBOL_REGEX);
+    if (!match) return false;
+
+    const startIndex = match.index! + match[0].indexOf('[') + 1;
+    const from = line.from + startIndex;
+
+    view.dispatch({
+        changes: { from, to: from + 1, insert: symbol }
+    });
+    return true;
+};
+
 /** 
  * Throttle utility for performance optimization
  * Limits how frequently a function can be called (useful for scroll/resize events)
  */
-const throttle = <T extends (...args: any[]) => void>(func: T, delay: number): T => {
+const throttle = <T extends (...args: unknown[]) => void>(func: T, delay: number): T => {
     let lastCall = 0;
     return ((...args: Parameters<T>) => {
         const now = Date.now();
@@ -452,7 +503,7 @@ class CheckboxStyleWidget {
             name: 'mobileCheckboxAlign',
             enabled: true,
             phase: 'main' as const,
-            fn: (data: { state: any }) => {
+            fn: (data: { state: State }) => {
                 // Wait for DOM to be fully rendered before measuring
                 requestAnimationFrame(() => {
                     const ul = this.menuElement?.querySelector('ul');
@@ -549,7 +600,7 @@ class CheckboxStyleWidget {
      * Renders the menu content using Obsidian's markdown system
      * This ensures checkboxes look identical to those in normal documents
      */
-    private async renderMenuContent(enabledStyles: any[]) {
+    private async renderMenuContent(enabledStyles: Array<{ symbol: string; description: string; enabled: boolean }>) {
         if (!this.menuElement) return;
 
         // Create markdown list of checkboxes
@@ -898,10 +949,11 @@ const checkboxWidgetState = StateField.define<{
 }>({
     create: () => ({ widget: null, overlayManager: new OverlayManager() }),
     update(state, tr) {
-        let { widget, overlayManager } = state;
+        let widget = state.widget;
+        const overlayManager = state.overlayManager;
 
         // Process any widget-related effects in this transaction
-        for (let effect of tr.effects) {
+        for (const effect of tr.effects) {
             if (effect.is(showWidgetEffect)) {
                 // Show new widget (destroy any existing one first)
                 const { pos, target, view, triggeredBy } = effect.value;
@@ -936,7 +988,7 @@ const pluginInstanceField = StateField.define<CheckboxStyleMenuPlugin | null>({
  * Handles both mouse (desktop) and touch (mobile) input methods
  */
 class InteractionHandler {
-    private state: WidgetState = { timer: null, lastTarget: null };
+    private state: WidgetState = { timer: null, lastTarget: null, cycleTarget: null, cycleWasLongPress: false };
     private abortController: AbortController | null = null;
 
     constructor(private view: EditorView, private plugin: CheckboxStyleMenuPlugin) {
@@ -963,6 +1015,63 @@ class InteractionHandler {
             this.view.dom.addEventListener('mouseup', this.handleMouseUp.bind(this), { signal });
             this.view.dom.addEventListener('contextmenu', this.handleContextMenu.bind(this), { signal });
         }
+
+        // Click-to-cycle: Obsidian wires its native checkbox toggle to 'mousedown'/'touchstart'
+        // (not 'click') for Live Preview widgets, so preventDefault has to happen there - by
+        // 'click' time the native toggle has already run and already touched the DOM. We still
+        // also suppress the trailing 'click' so the browser doesn't flash the native state
+        // first. Registered in the capture phase so we run before Obsidian's own handler.
+        if (Platform.isMobile) {
+            this.view.dom.addEventListener('touchstart', this.handleCyclePress.bind(this), { signal, capture: true, passive: false });
+        } else {
+            this.view.dom.addEventListener('mousedown', this.handleCyclePress.bind(this), { signal, capture: true });
+        }
+        this.view.dom.addEventListener('click', this.handleCycleClickSuppress.bind(this), { signal, capture: true });
+    }
+
+    /**
+     * Preempts Obsidian's native checkbox toggle the moment it actually fires. The
+     * symbol change itself is applied on release (handleMouseUp/handleTouchEnd) once
+     * it's known whether this turned into a long-press rather than a plain tap/click.
+     */
+    private handleCyclePress(event: MouseEvent | TouchEvent) {
+        if (!this.plugin.settings.cycleEnabled) return;
+        if ('button' in event && event.button !== 0) return; // Left click only; leave right-click to handleContextMenu
+
+        const target = event.target as HTMLElement;
+        if (!isValidCheckboxTarget(target)) return;
+        if (this.plugin.settings.cycleStates.length < 2) return; // Not a usable cycle
+
+        event.preventDefault();
+        this.state.cycleTarget = target;
+        this.state.cycleWasLongPress = false;
+    }
+
+    /** Suppresses the trailing click's default action, mirroring the preemption above */
+    private handleCycleClickSuppress(event: MouseEvent) {
+        if (!this.plugin.settings.cycleEnabled) return;
+
+        const target = event.target as HTMLElement;
+        if (!isValidCheckboxTarget(target)) return;
+        if (this.plugin.settings.cycleStates.length < 2) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    /** Writes the next symbol in the configured cycle for the given checkbox */
+    private applyCycleStep(target: HTMLElement) {
+        const cycle = this.plugin.settings.cycleStates;
+
+        const pos = this.view.posAtDOM(target);
+        if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
+
+        const line = this.view.state.doc.lineAt(pos);
+        const match = line.text.match(CHECKBOX_SYMBOL_REGEX);
+        if (!match) return;
+
+        const nextSymbol = getNextCycleSymbol(match[1], cycle);
+        writeCheckboxSymbolAtPos(this.view, pos, nextSymbol);
     }
 
     /** Clean up event listeners when handler is destroyed */
@@ -987,6 +1096,12 @@ class InteractionHandler {
     private handleLongPress(target: HTMLElement) {
         const pos = this.view.posAtDOM(target);
         if (pos === null || pos < 0 || pos > this.view.state.doc.length) return;
+
+        // If the click-cycle also armed for this same press, mark it as a long-press
+        // so the release handler doesn't also apply a cycle step on top of the menu.
+        if (this.state.cycleTarget === target) {
+            this.state.cycleWasLongPress = true;
+        }
 
         // Trigger with long-press method
         this.plugin.showCheckboxMenu(this.view, target, pos, 'long-press');
@@ -1056,6 +1171,19 @@ class InteractionHandler {
         // Mouse released - cancel any pending long-press
         this.clearTimer();
         this.state.lastTarget = null;
+
+        // Apply the cycle step now, unless this press escalated into a long-press
+        // (in which case the style menu is already showing instead)
+        if (this.state.cycleTarget) {
+            const target = this.state.cycleTarget;
+            const wasLongPress = this.state.cycleWasLongPress;
+            this.state.cycleTarget = null;
+            this.state.cycleWasLongPress = false;
+
+            if (!wasLongPress) {
+                this.applyCycleStep(target);
+            }
+        }
     }
 
     /**
@@ -1104,6 +1232,9 @@ class InteractionHandler {
                 this.clearTimer();
                 this.state.lastTarget = null;
                 this.state.touchStart = undefined;
+                // A scroll, not a tap - don't apply a cycle step on touchend either
+                this.state.cycleTarget = null;
+                this.state.cycleWasLongPress = false;
             }
         }
     }
@@ -1113,6 +1244,18 @@ class InteractionHandler {
         this.clearTimer();
         this.state.lastTarget = null;
         this.state.touchStart = undefined;
+
+        // Apply the cycle step now, unless this press escalated into a long-press
+        if (this.state.cycleTarget) {
+            const target = this.state.cycleTarget;
+            const wasLongPress = this.state.cycleWasLongPress;
+            this.state.cycleTarget = null;
+            this.state.cycleWasLongPress = false;
+
+            if (!wasLongPress) {
+                this.applyCycleStep(target);
+            }
+        }
     }
 }
 
@@ -1272,8 +1415,13 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     /**
      * Opens the checkbox style menu at the current cursor position
      * Called when user triggers the hotkey command
+     *
+     * `view` is typed as the honest union Obsidian's editorCallback actually
+     * provides (MarkdownView | MarkdownFileInfo), matching registerCommands()'s
+     * call site - but it's unused here: `editor` alone is enough (see below),
+     * and it's always present, unlike MarkdownFileInfo.editor which is optional.
      */
-    private openMenuAtCursor(editor: any, view: any) {
+    private openMenuAtCursor(editor: Editor, view: MarkdownView | MarkdownFileInfo) {
         const cursor = editor.getCursor();
         const line = editor.getLine(cursor.line);
         
@@ -1283,8 +1431,10 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             return;
         }
         
-        // Get the CodeMirror EditorView
-        const editorView = (view as any).editor?.cm as EditorView;
+        // Get the CodeMirror EditorView. `editor` and `view.editor` are the same
+        // instance here; `editor` is used since it's guaranteed present, sidestepping
+        // MarkdownFileInfo.editor's optionality for no behavioral difference.
+        const editorView = (editor as EditorWithCM).cm;
         if (!editorView) {
             new Notice('Unable to access editor view');
             return;
@@ -1367,6 +1517,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         // Ensure duration values are within valid ranges
         this.settings.longPressDuration = Math.max(100, Math.min(1000, this.settings.longPressDuration));
         this.settings.touchLongPressDuration = Math.max(200, Math.min(1500, this.settings.touchLongPressDuration));
+        this.settings.cycleStates = this.sanitizeCycleStates(this.settings.cycleStates);
         
         await this.saveData(this.settings);
         this.updateCheckboxStyles(); // Apply changes and invalidate cache
@@ -1388,15 +1539,37 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             touchLongPressDuration: this.validateDuration(data?.touchLongPressDuration, 200, 1500, 500),
             enableHapticFeedback: data?.enableHapticFeedback ?? true,
             enableTasksCompatibility: data?.enableTasksCompatibility ?? false,
-            hasShownTasksNotice: data?.hasShownTasksNotice ?? false
+            hasShownTasksNotice: data?.hasShownTasksNotice ?? false,
+            cycleEnabled: data?.cycleEnabled ?? false,
+            cycleStates: this.sanitizeCycleStates(data?.cycleStates)
         };
+    }
+
+    /**
+     * Validates the click-cycle symbol list: keeps only single-character strings,
+     * drops duplicates (first occurrence wins), and falls back to the default
+     * two-state cycle if fewer than 2 valid, unique symbols remain.
+     */
+    private sanitizeCycleStates(value: unknown): string[] {
+        if (!Array.isArray(value)) return [...DEFAULT_SETTINGS.cycleStates];
+
+        const seen = new Set<string>();
+        const cleaned: string[] = [];
+        for (const item of value) {
+            if (typeof item !== 'string' || item.length !== 1) continue;
+            if (seen.has(item)) continue;
+            seen.add(item);
+            cleaned.push(item);
+        }
+
+        return cleaned.length >= 2 ? cleaned : [...DEFAULT_SETTINGS.cycleStates];
     }
 
     /**
      * Validates the trigger method setting
      * Ensures only valid values are used
      */
-    private validateTriggerMethod(value: any): 'long-press' | 'right-click' | 'both' {
+    private validateTriggerMethod(value: unknown): 'long-press' | 'right-click' | 'both' {
         if (value === 'long-press' || value === 'right-click' || value === 'both') {
             return value;
         }
@@ -1407,8 +1580,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
      * Validates numeric duration settings with range checking
      * Returns default value if input is invalid or out of range
      */
-    private validateDuration(value: any, min: number, max: number, defaultValue: number): number {
-        const num = typeof value === 'number' ? value : parseInt(value);
+    private validateDuration(value: unknown, min: number, max: number, defaultValue: number): number {
+        const num = typeof value === 'number' ? value : parseInt(String(value), 10);
         return !isNaN(num) && num >= min && num <= max ? num : defaultValue;
     }
 
@@ -1416,15 +1589,16 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
      * Validates the styles configuration object
      * Ensures all known styles have boolean values, provides defaults for missing styles
      */
-    private validateStylesObject(styles: any): { [symbol: string]: boolean } {
+    private validateStylesObject(styles: unknown): { [symbol: string]: boolean } {
         if (!styles || typeof styles !== 'object') {
             return DEFAULT_SETTINGS.styles;
         }
         
+        const source = styles as Record<string, unknown>;
         const validated: { [symbol: string]: boolean } = {};
         CHECKBOX_STYLES.forEach(style => {
-            validated[style.symbol] = typeof styles[style.symbol] === 'boolean' ? 
-                styles[style.symbol] : DEFAULT_SETTINGS.styles[style.symbol];
+            validated[style.symbol] = typeof source[style.symbol] === 'boolean' ? 
+                (source[style.symbol] as boolean) : DEFAULT_SETTINGS.styles[style.symbol];
         });
         
         return validated;
@@ -1446,19 +1620,71 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
  */
 class CheckboxStyleSettingTab extends PluginSettingTab {
     private isAdvancedExpanded: boolean = false;  // Track Advanced section state
+    private openPickerIndex: number | null = null; // Which cycle slot's picker is currently open, if any
+    private cycleContainerEl: HTMLElement | null = null; // For surgical chip updates during picker scroll
 
     constructor(app: App, private plugin: CheckboxStyleMenuPlugin) {
         super(app, plugin);
     }
 
-    /** Main entry point: builds the entire settings UI */
+    /**
+     * Finds the actual scrollable settings container by CSS (`overflow-y: auto` or
+     * `scroll`), walking up from containerEl. On desktop this is Obsidian's own
+     * `.vertical-tab-content` wrapper; on mobile it's the settings modal's content
+     * area. containerEl itself is emptied/rebuilt on every display() call, so it's
+     * never the thing actually holding scroll position - an ancestor is.
+     */
+    private getScrollParent(): HTMLElement {
+        let el: HTMLElement | null = this.containerEl;
+        while (el) {
+            const overflowY = getComputedStyle(el).overflowY;
+            if (overflowY === 'auto' || overflowY === 'scroll') return el;
+            el = el.parentElement;
+        }
+        return this.containerEl;
+    }
+
+    /**
+     * Main entry point: builds the entire settings UI.
+     *
+     * Every add/remove/open-picker action re-renders by calling this wholesale -
+     * containerEl.empty() destroys and rebuilds all the DOM, which resets the
+     * settings panel's scroll position to the top even though nothing about the
+     * change should move the viewport. Captures and restores the real scroll
+     * parent's scrollTop around the rebuild so the user stays where they were.
+     * (The picker's own symbol-selection deliberately skips display() entirely for
+     * the same reason - see applyCyclePickerSelection's comment.)
+     *
+     * Restored twice, deliberately: containerEl.empty() clamps the scroll parent's
+     * scrollTop to 0 the instant it shrinks the container, synchronously - before
+     * anything queued in requestAnimationFrame runs. rAF is supposed to guarantee
+     * no paint happens in between, but a visible one-frame flash to the top was
+     * observed anyway (a known Electron/Chromium exception to that guarantee, not
+     * specific to this code). Setting scrollTop back immediately, in the same tick
+     * as the rebuild, closes that gap entirely in the common case; the rAF restore
+     * stays as a safety net for any layout that settles later (e.g. async content).
+     */
     display(): void {
+        const scrollParent = this.getScrollParent();
+        const scrollTop = scrollParent.scrollTop;
+
         this.containerEl.empty();
         this.addTriggerMethodSetting(); // Menu trigger method selection
         this.addDurationSettings();      // Long-press timing controls
         this.addMobileSettings();        // Mobile-specific options
+        this.addCustomCycleSetting();    // Click-to-cycle override
         this.addStyleToggles();          // Individual style enable/disable
         this.addAdvancedSection();       // Advanced settings (collapsible)
+
+        // Immediate restore, same tick as the rebuild - closes the gap before any
+        // paint can happen at all in the common case
+        scrollParent.scrollTop = scrollTop;
+
+        // Follow-up restore once the browser has actually finished laying out the
+        // new content, in case anything shifted after the immediate restore above
+        requestAnimationFrame(() => {
+            scrollParent.scrollTop = scrollTop;
+        });
     }
 
     /**
@@ -1507,6 +1733,339 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
             'touchLongPressDuration',
             200, 1500
         );
+    }
+
+    /**
+     * Creates the click-to-cycle override section.
+     * Off by default so plain clicks keep Obsidian's native [ ] <-> [x] toggle.
+     * When enabled, shows the cycle as one sequence - tap a state to reassign it
+     * via a scroll-snap picker (reordering is just reassigning a slot, so there's
+     * no separate drag/reorder UI), plus a "+ Add" button and delete on 3+ states.
+     *
+     * Editor (Live Preview / Source mode) only, matching this plugin's current scope -
+     * Reading view keeps the default toggle regardless of this setting.
+     */
+    private addCustomCycleSetting(): void {
+        new Setting(this.containerEl)
+            .setName('Custom checkbox cycle')
+            .setDesc('Override what clicking a checkbox cycles through, instead of the default unchecked \u2194 checked toggle.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.cycleEnabled)
+                .onChange(async (value) => {
+                    this.plugin.settings.cycleEnabled = value;
+                    await this.plugin.saveSettings();
+                    this.display(); // Show/hide the editor below
+                }));
+
+        if (!this.plugin.settings.cycleEnabled) return;
+
+        const cycleContainer = this.containerEl.createDiv({ cls: 'checkbox-cycle-editor' });
+        this.cycleContainerEl = cycleContainer;
+
+        new Setting(cycleContainer)
+            .setName('Cycle')
+            .setDesc('Tap a state to change it. Tap + to add another. A state can only appear once in the cycle.')
+            .setHeading();
+
+        this.renderCycleSequence(cycleContainer);
+
+        // Re-open the picker if one was open before this re-render (e.g. after adding a state)
+        if (this.openPickerIndex !== null && this.openPickerIndex < this.plugin.settings.cycleStates.length) {
+            this.renderCyclePicker(cycleContainer, this.openPickerIndex);
+        }
+    }
+
+    /** Renders the cycle as one row: state, arrow, state, arrow, ..., + Add */
+    private renderCycleSequence(container: HTMLElement): void {
+        const cycle = this.plugin.settings.cycleStates;
+        const row = container.createDiv({ cls: 'checkbox-cycle-sequence' });
+
+        cycle.forEach((_, index) => {
+            this.createCycleSlot(row, index);
+            row.createEl('span', { cls: 'checkbox-cycle-arrow', text: '\u2192' });
+        });
+
+        const addBtn = row.createEl('button', {
+            cls: 'checkbox-cycle-add-button',
+            text: '+ Add',
+            attr: { type: 'button' }
+        });
+        addBtn.addEventListener('click', async () => {
+            const usedSymbols = new Set(this.plugin.settings.cycleStates);
+            const nextStyle = CHECKBOX_STYLES.find(s => !usedSymbols.has(s.symbol));
+            if (!nextStyle) {
+                new Notice('Every available style is already in this cycle');
+                return;
+            }
+
+            this.plugin.settings.cycleStates.push(nextStyle.symbol);
+            this.openPickerIndex = this.plugin.settings.cycleStates.length - 1;
+            await this.plugin.saveSettings();
+            this.display(); // Re-render, then auto-opens the picker for the new slot
+        });
+    }
+
+    /**
+     * One slot in the cycle sequence: a tappable chip showing the current state,
+     * plus a delete button once there are 3+ states (deleting below 2 isn't allowed).
+     */
+    private createCycleSlot(container: HTMLElement, index: number): void {
+        const cycle = this.plugin.settings.cycleStates;
+        const slot = container.createDiv({ cls: 'checkbox-cycle-slot' });
+
+        if (cycle.length >= 3) {
+            const removeBtn = slot.createEl('button', {
+                cls: 'checkbox-cycle-slot-remove',
+                text: '\u00d7',
+                attr: { type: 'button', 'aria-label': 'Remove this state' }
+            });
+            removeBtn.addEventListener('click', async (event) => {
+                event.stopPropagation(); // Don't also trigger the chip's open/close click below
+
+                this.plugin.settings.cycleStates.splice(index, 1);
+                if (this.openPickerIndex === index) {
+                    this.openPickerIndex = null;
+                } else if (this.openPickerIndex !== null && this.openPickerIndex > index) {
+                    this.openPickerIndex -= 1; // Keep pointing at the same logical slot after the shift
+                }
+                await this.plugin.saveSettings();
+                this.display();
+            });
+        }
+
+        const chip = slot.createDiv({ cls: 'checkbox-cycle-chip' });
+        chip.setAttribute('role', 'button');
+        chip.setAttribute('tabindex', '0');
+        chip.setAttribute('data-cycle-index', String(index));
+        chip.toggleClass('is-open', this.openPickerIndex === index);
+
+        const toggleOpen = () => {
+            this.openPickerIndex = (this.openPickerIndex === index) ? null : index;
+            this.display();
+        };
+        chip.addEventListener('click', toggleOpen);
+        chip.addEventListener('keydown', (event: KeyboardEvent) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleOpen();
+            }
+        });
+
+        this.renderCycleChipContent(chip, cycle[index]);
+    }
+
+    /**
+     * Renders (or re-renders) a slot chip's checkbox preview for the given symbol.
+     *
+     * The rendered <li> has no trailing <p>/text node at all - `li.innerHTML` is
+     * just the bare `<input class="task-list-item-checkbox">`. So the extra space
+     * to the right of the checkbox was never about hidden trailing content. The
+     * actual cause: the `markdown-source-view mod-cm6 cm-s-obsidian` classes needed
+     * for per-symbol theming (themes key a symbol's icon/color off data-task on the
+     * <li>) were applied directly to the chip's own flex container - and those same
+     * classes are exactly what a theme's own (likely !important) layout rules
+     * target, which breaks the chip's own `display: flex; justify-content: center`
+     * the same way it previously broke the ul/li. Fix: keep the theme classes off
+     * the actual flex/centering container, and put them on an inner wrapper instead
+     * - one that gets neutralized to `display: contents` via inline !important,
+     * same technique already used on ul/li, so it stays in the ancestor chain for
+     * theming purposes without contributing a box of its own.
+     */
+    private renderCycleChipContent(chip: HTMLElement, symbol: string): void {
+        chip.empty();
+        try {
+            const themeWrapper = chip.createDiv({ cls: 'markdown-source-view mod-cm6 cm-s-obsidian' });
+            const markdown = `- [${symbol}] `;
+            const renderChild = new MarkdownRenderChild(themeWrapper);
+            this.plugin.addChild(renderChild);
+            MarkdownRenderer.render(this.app, markdown, themeWrapper, '', renderChild)
+                .then(() => {
+                    this.isolateChipCheckboxLayout(themeWrapper, symbol);
+                })
+                .catch(() => {
+                    chip.empty();
+                    chip.setText(`[${symbol}]`);
+                });
+        } catch {
+            chip.setText(`[${symbol}]`);
+        }
+    }
+
+    /**
+     * Forces the theme-class wrapper, the rendered ul/li, and the checkbox <input>
+     * itself into a centered, shrink-to-fit layout, all via inline !important (the
+     * only thing that reliably beats a theme's own !important stylesheet rules
+     * regardless of specificity). The <input>'s own margin reset matters as much as
+     * the ul/li display changes - see the comment above that line for why.
+     */
+    private isolateChipCheckboxLayout(themeWrapper: HTMLElement, symbol: string): void {
+        const ul = themeWrapper.querySelector('ul');
+        const li = themeWrapper.querySelector('li');
+
+        if (!ul || !li) {
+            themeWrapper.empty();
+            themeWrapper.setText(`[${symbol}]`);
+            return;
+        }
+
+        // The wrapper itself carries the theme classes purely so data-task theming
+        // resolves on the li below - those same classes are what fight our chip's
+        // centering (see docstring above), so neutralize the wrapper's own box too.
+        themeWrapper.style.setProperty('display', 'contents', 'important');
+
+        // Remove the ul's own box entirely so its width/alignment can't matter -
+        // the li becomes a direct flex item of the chip instead
+        ul.style.setProperty('display', 'contents', 'important');
+
+        // Shrink the li to its content (just the checkbox - the rendered markup
+        // has no trailing <p>/text node to also hide)
+        li.style.setProperty('display', 'inline-flex', 'important');
+        li.style.setProperty('align-items', 'center', 'important');
+        li.style.setProperty('justify-content', 'center', 'important');
+        li.style.setProperty('width', 'auto', 'important');
+        li.style.setProperty('margin', '0', 'important');
+        li.style.setProperty('padding', '0', 'important');
+        li.style.setProperty('pointer-events', 'none', 'important'); // Clicks land on the chip itself
+
+        // The checkbox <input> itself carries a baked-in negative left margin from
+        // the theme (e.g. margin: 0 0 0 -22.5px), meant to pull the checkbox back
+        // into a normal task-list's marker/indent space. Since we've stripped that
+        // marker/indent entirely (ul/li collapsed via display: contents above), the
+        // same negative margin now just drags the checkbox off to the left instead.
+        // Our own stylesheet already resets this margin, but as a plain
+        // (non-!important) rule it loses to the theme's - same fix as ul/li: force
+        // it inline with !important, which nothing else can outrank.
+        const input = li.querySelector('input');
+        if (input) {
+            input.style.setProperty('margin', '0', 'important');
+        }
+    }
+
+    /**
+     * Renders the scroll-snap picker for one cycle slot, inline below the sequence
+     * row. Offers every style not already used by another slot (a state can't
+     * appear twice - the cycle-advance logic looks up "what's next" by the current
+     * symbol's position, so a duplicate would make one occurrence unreachable).
+     * Selection applies live as the list settles after scrolling, or immediately
+     * on tapping an option; "Done" just collapses the picker back down.
+     */
+    private renderCyclePicker(container: HTMLElement, index: number): void {
+        const cycle = this.plugin.settings.cycleStates;
+        const usedElsewhere = new Set(cycle.filter((_, i) => i !== index));
+        const options = CHECKBOX_STYLES.filter(s => !usedElsewhere.has(s.symbol));
+
+        const picker = container.createDiv({ cls: 'checkbox-cycle-picker' });
+
+        const header = picker.createDiv({ cls: 'checkbox-cycle-picker-header' });
+        const doneBtn = header.createEl('button', {
+            cls: 'checkbox-cycle-picker-done',
+            text: 'Done',
+            attr: { type: 'button' }
+        });
+        doneBtn.addEventListener('click', () => {
+            this.openPickerIndex = null;
+            this.display();
+        });
+
+        if (options.length === 0) {
+            picker.createEl('p', {
+                cls: 'setting-item-description',
+                text: 'Every available style is already used elsewhere in this cycle.'
+            });
+            return;
+        }
+
+        const viewport = picker.createDiv({ cls: 'checkbox-cycle-picker-viewport' });
+        viewport.createDiv({ cls: 'checkbox-cycle-picker-band' }); // Positioned via CSS, purely visual
+        viewport.createDiv({ cls: 'checkbox-cycle-picker-spacer' });
+
+        const items: { el: HTMLElement; symbol: string }[] = [];
+        options.forEach(style => {
+            const item = viewport.createDiv({ cls: 'checkbox-cycle-picker-item' });
+            try {
+                const markdown = `- [${style.symbol}] ${style.description}`;
+                const renderChild = new MarkdownRenderChild(item);
+                this.plugin.addChild(renderChild);
+                MarkdownRenderer.render(this.app, markdown, item, '', renderChild)
+                    .catch(() => {
+                        item.empty();
+                        item.setText(`[${style.symbol}] ${style.description}`);
+                    });
+            } catch {
+                item.setText(`[${style.symbol}] ${style.description}`);
+            }
+
+            item.addEventListener('click', () => {
+                this.applyCyclePickerSelection(index, style.symbol, items, item, true);
+            });
+
+            items.push({ el: item, symbol: style.symbol });
+        });
+
+        viewport.createDiv({ cls: 'checkbox-cycle-picker-spacer' });
+
+        let settleTimer: number | undefined;
+        viewport.addEventListener('scroll', () => {
+            window.clearTimeout(settleTimer);
+            settleTimer = window.setTimeout(() => {
+                const centerY = viewport.scrollTop + viewport.clientHeight / 2;
+                let closest = items[0];
+                let closestDistance = Infinity;
+                for (const entry of items) {
+                    const mid = entry.el.offsetTop + entry.el.clientHeight / 2;
+                    const distance = Math.abs(mid - centerY);
+                    if (distance < closestDistance) {
+                        closestDistance = distance;
+                        closest = entry;
+                    }
+                }
+                this.applyCyclePickerSelection(index, closest.symbol, items, closest.el, false);
+            }, 120);
+        }, { passive: true });
+
+        // Open already centered on the slot's current value, no scroll animation
+        requestAnimationFrame(() => {
+            const current = items.find(entry => entry.symbol === cycle[index]) ?? items[0];
+            current.el.scrollIntoView({ block: 'center' });
+            this.markCenteredPickerItem(items, current.el);
+        });
+    }
+
+    /**
+     * Applies a picker selection: updates settings, the highlighted item, and the
+     * corresponding chip in the sequence row above - without a full display()
+     * re-render, so the picker stays open and scroll position isn't disturbed.
+     */
+    private async applyCyclePickerSelection(
+        index: number,
+        symbol: string,
+        items: { el: HTMLElement; symbol: string }[],
+        selectedEl: HTMLElement,
+        smoothScroll: boolean
+    ): Promise<void> {
+        if (this.plugin.settings.cycleStates[index] === symbol) {
+            this.markCenteredPickerItem(items, selectedEl);
+            return; // No change - avoid an unnecessary save
+        }
+
+        this.plugin.settings.cycleStates[index] = symbol;
+        await this.plugin.saveSettings();
+
+        this.markCenteredPickerItem(items, selectedEl);
+
+        const chip = this.cycleContainerEl?.querySelector(
+            `.checkbox-cycle-chip[data-cycle-index="${index}"]`
+        ) as HTMLElement | null;
+        if (chip) this.renderCycleChipContent(chip, symbol);
+
+        if (smoothScroll) {
+            selectedEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+    }
+
+    /** Marks exactly one picker item as the centered/selected one */
+    private markCenteredPickerItem(items: { el: HTMLElement }[], selectedEl?: HTMLElement): void {
+        items.forEach(entry => entry.el.toggleClass('is-centered', entry.el === selectedEl));
     }
 
     /** Adds mobile-specific settings like haptic feedback */
@@ -1672,8 +2231,8 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
     private createDurationSetting(name: string, desc: string, key: keyof CheckboxStyleSettings, min: number, max: number): void {
         const setting = new Setting(this.containerEl).setName(name).setDesc(desc);
         
-        let sliderComponent: any;
-        let textComponent: any;
+        let sliderComponent!: SliderComponent;
+        let textComponent!: TextComponent;
         
         setting
             .addSlider(slider => {
@@ -1741,7 +2300,7 @@ class CheckboxStyleSettingTab extends PluginSettingTab {
                             await this.plugin.saveSettings();
                         }));
                 });
-        } catch (error) {
+        } catch {
             // Fallback: simple text-based toggle if markdown rendering fails
             new Setting(container)
                 .setName(`${style.description} [${style.symbol}]`)

@@ -24,6 +24,19 @@ export interface CompatibilitySettings {
     hasShownTasksNotice: boolean;
 }
 
+/**
+ * Obsidian's public `App` type doesn't expose the internal plugin registry -
+ * there's no official "is this other plugin installed" API. This narrow
+ * interface documents exactly the undocumented shape we rely on, so the rest
+ * of `app`'s properties stay fully type-checked instead of being opted out of
+ * checking entirely via a blanket `any` cast.
+ */
+interface AppWithPlugins extends App {
+    plugins: {
+        plugins: Record<string, unknown>;
+    };
+}
+
 /** Result of applying a checkbox style change */
 export interface StyleApplicationResult {
     shouldHideMenu: boolean;  // Whether the menu should be hidden immediately
@@ -48,7 +61,7 @@ export interface CompatibilityUIInfo {
  * @returns true if Tasks plugin is active
  */
 export function isTasksPluginInstalled(app: App): boolean {
-    const tasksPlugin = (app as any).plugins?.plugins?.['obsidian-tasks-plugin'];
+    const tasksPlugin = (app as AppWithPlugins).plugins?.plugins?.['obsidian-tasks-plugin'];
     return tasksPlugin !== undefined;
 }
 

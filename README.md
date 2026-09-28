@@ -8,6 +8,7 @@ Provides an intuitive menu for quickly changing checkbox styles in [Obsidian](ht
 ## Features
 
 - **Quick Style Selection**: Long-press a checkbox to open a style menu
+- **Custom Click Cycle**: Optionally replace the default unchecked ↔ checked toggle with your own custom sequence of checkbox states
 - **22 Checkbox Styles**: Supports all 22 checkbox styles of [Minimal](https://github.com/kepano/obsidian-minimal) and [Things](https://github.com/colineckert/obsidian-things)
 - **Customizable**: Choose which styles appear in your menu
 - **Theme Compatible**: Matches any theme or custom CSS
@@ -102,6 +103,23 @@ You can enable/disable any of the 22 available checkbox styles:
 2. Under "Choose which styles to show in the menu"
 3. Toggle individual styles on/off
 4. Only enabled styles will appear in the selection menu
+
+## Custom Checkbox Cycle
+
+By default, clicking a checkbox toggles between unchecked (`[ ]`) and checked (`[x]`). You can override this with your own custom sequence of states instead.
+
+### Enabling a Custom Cycle
+
+1. Go to plugin settings and toggle on **Custom checkbox cycle**
+2. Tap any state in the cycle to open a scroll-snap picker and reassign it
+3. Tap **+ Add** to add another state (a state can only appear once in the cycle)
+4. Once the cycle has 3 or more states, a remove (×) button appears on each one
+
+Clicking a checkbox now steps through your states in order, wrapping back to the first state after the last.
+
+**Note:** Like the rest of this plugin, the custom cycle only applies while editing (Live Preview / Source mode) - Reading view keeps the default toggle behavior regardless of this setting.
+
+**Tasks plugin users:** if a state you choose already means something else to the Tasks plugin (or another checkbox-aware plugin), double-check that your custom cycle doesn't conflict with it.
 
 ## Compatibility
 

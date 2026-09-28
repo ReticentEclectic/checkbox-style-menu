@@ -183,43 +183,6 @@
     margin: 0 auto !important;
 }
 
-/* Settings Panel Mobile Styles */
-.is-mobile .checkbox-style-toggles .setting-item-name li {
-    font-size: calc(var(--font-text-size) * 1.1);
-}
-
-.is-mobile .checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
-    transform: scale(1.2);
-}
-
-/* =========================
-   Settings Panel Styles
-   ========================= */
-.checkbox-style-toggles .setting-item-name ul {
-    margin: 0;
-}
-
-.checkbox-style-toggles .setting-item-name li {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--font-text-size);
-}
-
-.checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
-    flex-shrink: 0;
-}
-
-@media (max-width: 768px) {
-    .checkbox-style-toggles .setting-item-name li {
-        font-size: calc(var(--font-text-size) * 1.1);
-    }
-    
-    .checkbox-style-toggles .setting-item-name .task-list-item-checkbox {
-        transform: scale(1.2);
-    }
-}
-
 /* =========================
    Advanced Section Collapsible
    ========================= */
@@ -271,4 +234,192 @@
     border-top: 1px solid var(--background-modifier-border);
     margin-top: 8px;
     padding-top: 8px;
+}
+/* --- Checkbox click-to-cycle editor (settings tab) --- */
+
+.checkbox-cycle-editor {
+    margin-left: 8px;
+    padding-left: 12px;
+    border-left: 2px solid var(--background-modifier-border);
+}
+
+.checkbox-cycle-note {
+    margin-top: 4px;
+}
+
+.checkbox-cycle-wrap-note {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    margin: 2px 0 8px;
+}
+
+/* The cycle itself: state -> state -> ... -> + Add, wraps to fill available width */
+.checkbox-cycle-sequence {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 10px 0 4px;
+}
+
+.checkbox-cycle-slot {
+    position: relative;
+}
+
+/* Small red delete button, only rendered at 3+ states */
+.checkbox-cycle-slot-remove {
+    position: absolute;
+    top: -8px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: none;
+    background-color: var(--color-red, #e03131);
+    color: white;
+    font-size: 11px;
+    line-height: 18px;
+    padding: 0;
+    cursor: pointer;
+    z-index: 1;
+}
+
+.checkbox-cycle-chip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.1s ease, background-color 0.1s ease;
+}
+
+.checkbox-cycle-chip:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.checkbox-cycle-chip:focus-visible,
+.checkbox-cycle-chip.is-open {
+    outline: none;
+    border-color: var(--interactive-accent);
+}
+
+/* Chip content renders the full markdown checkbox (ul/li kept, not stripped to a
+   bare input - see renderCycleChipContent/isolateChipCheckboxLayout for why), with
+   layout forced via inline !important from JS. This margin:0 is a defense-in-depth
+   backstop for that same fix - the theme's own negative left margin on the input
+   (meant to pull it back into a normal task-list's marker/indent space, which we've
+   stripped away here) is the actual thing being overridden, and the JS-side inline
+   !important is what reliably wins; this plain rule alone was confirmed insufficient. */
+.checkbox-cycle-chip .task-list-item-checkbox {
+    margin: 0;
+    pointer-events: none; /* Clicks land on the chip itself */
+}
+
+.checkbox-cycle-arrow {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+    padding: 0 2px;
+}
+
+.checkbox-cycle-add-button {
+    background: none;
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.checkbox-cycle-add-button:hover {
+    border-color: var(--interactive-accent);
+    color: var(--text-normal);
+}
+
+/* --- Scroll-snap picker: opens inline below the sequence row --- */
+
+.checkbox-cycle-picker {
+    margin: 4px 0 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+    overflow: hidden;
+}
+
+.checkbox-cycle-picker-header {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.checkbox-cycle-picker-done {
+    background: none;
+    border: none;
+    color: var(--interactive-accent);
+    font-weight: 600;
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+/* Fixed-height viewport = 3 rows, so the middle row lines up with the band */
+.checkbox-cycle-picker-viewport {
+    position: relative;
+    height: 132px;
+    overflow-y: auto;
+    scroll-snap-type: y mandatory;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Leading/trailing spacers let the first and last real items scroll to center */
+.checkbox-cycle-picker-viewport > .checkbox-cycle-picker-spacer {
+    height: 44px;
+}
+
+/* Purely visual center band; sits behind the scrolling items */
+.checkbox-cycle-picker-band {
+    position: absolute;
+    top: 44px;
+    left: 0;
+    right: 0;
+    height: 44px;
+    border-top: 1px solid var(--background-modifier-border);
+    border-bottom: 1px solid var(--background-modifier-border);
+    pointer-events: none;
+}
+
+.checkbox-cycle-picker-item {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    scroll-snap-align: center;
+    opacity: 0.45;
+    cursor: pointer;
+    transition: opacity 0.1s ease;
+}
+
+.checkbox-cycle-picker-item.is-centered {
+    opacity: 1;
+    font-weight: 600;
+}
+
+.checkbox-cycle-picker-item ul,
+.checkbox-cycle-picker-item li {
+    list-style: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    pointer-events: none; /* Clicks land on the item container itself */
+}
+
+.checkbox-cycle-picker-item li {
+    display: flex !important;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
 }
