@@ -1,7 +1,7 @@
 import { Plugin, MarkdownRenderer, MarkdownRenderChild, PluginSettingTab, App, Setting, SliderComponent, TextComponent, Editor, MarkdownView, MarkdownFileInfo, setTooltip, Platform, Notice, debounce } from 'obsidian';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { StateField, StateEffect } from '@codemirror/state';
-import { createPopper, Instance as PopperInstance, Placement, State } from '@popperjs/core';
+import { createPopper, Instance as PopperInstance, Placement } from '@popperjs/core';
 import { 
     isTasksPluginInstalled,
     shouldUseClickForToggle, 
@@ -122,6 +122,7 @@ const DEFAULT_SETTINGS: CheckboxStyleSettings = {
  */
 const SCROLL_THRESHOLD = 10;      // Pixels of movement before canceling long-press
 const TAP_TIME_THRESHOLD = 300;   // Maximum duration for a tap vs. long-press
+const MOBILE_MENU_GUTTER = 8;     // Px kept between the mobile menu and the screen edges (keep in sync with styles.css)
 
 /**
  * CODEMIRROR STATE EFFECTS
@@ -470,11 +471,19 @@ class CheckboxStyleWidget {
         // Desktop: menu to the left (doesn't obscure content)
         const placement: Placement = Platform.isMobile ? 'top-start' : 'left-start';
         
+        // Mobile: line the menu's first checkbox up with the target checkbox. Measured once,
+        // before Popper runs (the menu is already in the DOM by now), as the horizontal shift
+        // from Popper's 'top-start' spot (menu's left edge = target's left edge) that puts
+        // the two checkbox centers on the same vertical line. Passed to Popper as the offset
+        // modifier's "skidding" so preventOverflow sees it and can correct for it - unlike the
+        // old post-hoc `style.left` nudge, which ran after preventOverflow and undid it.
+        const alignSkidding = Platform.isMobile ? this.measureFirstCheckboxSkidding() : 0;
+
         const baseModifiers = [
             { 
                 name: 'offset', 
                 options: { 
-                    offset: Platform.isMobile ? [0, 12] : [-8, 6] // Spacing from checkbox
+                    offset: Platform.isMobile ? [alignSkidding, 12] : [-8, 6] // Spacing from checkbox
                 } 
             },
             { 
@@ -489,68 +498,51 @@ class CheckboxStyleWidget {
                 name: 'preventOverflow', 
                 enabled: Platform.isMobile,  // Only constrain mobile menus to viewport
                 options: { 
-                    boundary: 'viewport'
+                    boundary: 'viewport',
+                    padding: MOBILE_MENU_GUTTER // Keep a small gutter from the screen edges
                 } 
             },
         ];
 
         /**
-         * Mobile-specific alignment modifier
-         * Aligns the first checkbox in the menu with the target checkbox
-         * This creates a more intuitive visual connection for users
+         * All mobile horizontal positioning goes through Popper: 'top-start' + the alignment
+         * skidding above, then preventOverflow keeps the menu MOBILE_MENU_GUTTER inside the
+         * viewport. So a short menu stays aligned with the target until it reaches the right
+         * edge and then stops moving, while a long menu (width capped in styles.css to the
+         * viewport minus both gutters) fills the screen and scrolls.
+         *
+         * The earlier version did this alignment as a `style.left` nudge in a rAF after
+         * Popper ran, plus a max-width computed from the target line's right edge. The nudge
+         * pushed the menu back out of the region preventOverflow had just kept it in, and the
+         * width cap mixed a viewport coordinate with a container-relative offset - that
+         * combination was the off-screen bug for short menus at deep indents.
          */
-        const mobileAlignModifier = Platform.isMobile ? [{
-            name: 'mobileCheckboxAlign',
-            enabled: true,
-            phase: 'main' as const,
-            fn: (data: { state: State }) => {
-                // Wait for DOM to be fully rendered before measuring
-                requestAnimationFrame(() => {
-                    const ul = this.menuElement?.querySelector('ul');
-                    const firstLi = ul?.querySelector('li:first-child');
-                    const firstCheckbox = firstLi?.querySelector('.task-list-item-checkbox');
-                    
-                    if (firstCheckbox && this.menuElement && ul) {
-                        // Calculate horizontal offset to align checkbox centers
-                        const checkboxRect = firstCheckbox.getBoundingClientRect();
-                        const checkboxCenterX = checkboxRect.left + (checkboxRect.width / 2);
-                        const targetRect = this.targetElement.getBoundingClientRect();
-                        const targetCenterX = targetRect.left + (targetRect.width / 2);
-                        
-                        const offsetX = targetCenterX - checkboxCenterX;
-                        
-                        // Apply alignment offset
-                        const currentX = parseFloat(this.menuElement.style.left) || 0;
-                        const newX = currentX + offsetX;
-                        this.menuElement.style.left = `${newX}px`;
-                        
-                        // Constrain menu width to available line space
-                        const targetLine = this.targetElement.closest('.cm-line');
-                        
-                        if (targetLine) {
-                            const lineRect = targetLine.getBoundingClientRect();
-                            const availableWidth = lineRect.right - newX;
-                            
-                            if (availableWidth > 0) {
-                                this.menuElement.style.maxWidth = `${availableWidth}px`;
-                                this.menuElement.style.width = `auto`;
-                                ul.style.maxWidth = '100%';
-                                ul.style.width = 'auto';
-                            }
-                        }
-                    }
-                });
-                
-                return data.state;
-            }
-        }] : [];
-
         const config = {
             placement,
-            modifiers: [...baseModifiers, ...mobileAlignModifier],
+            modifiers: baseModifiers,
         };
 
         this.popperInstance = createPopper(this.targetElement, this.menuElement, config);
+    }
+
+    /**
+     * Horizontal shift (px, negative = left) that moves the menu from Popper's 'top-start'
+     * position so its first checkbox is centered over the target checkbox. Both centers are
+     * measured relative to their own boxes, so it doesn't matter where the menu currently is.
+     * Returns 0 if there's no checkbox to align to (e.g. "No styles enabled").
+     */
+    private measureFirstCheckboxSkidding(): number {
+        if (!this.menuElement) return 0;
+
+        const firstCheckbox = this.menuElement.querySelector('li .task-list-item-checkbox');
+        if (!firstCheckbox) return 0;
+
+        const menuRect = this.menuElement.getBoundingClientRect();
+        const checkboxRect = firstCheckbox.getBoundingClientRect();
+        const targetRect = this.targetElement.getBoundingClientRect();
+
+        const checkboxCenterInMenu = (checkboxRect.left - menuRect.left) + checkboxRect.width / 2;
+        return (targetRect.width / 2) - checkboxCenterInMenu;
     }
 
     /**

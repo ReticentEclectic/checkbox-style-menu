@@ -107,7 +107,13 @@
     overflow: visible;
     white-space: nowrap;
     position: relative;
-    width: auto; /* Width will be set dynamically by JavaScript */
+    width: auto;
+    /* Cap so a menu with many styles scrolls (via the ul below) instead of overflowing:
+       the editor's width, and never more than the screen minus a gutter on each side
+       (8px - keep in sync with MOBILE_MENU_GUTTER in main.ts). Popper's preventOverflow
+       then keeps it inside that gutter, so a capped menu fills the screen edge to edge
+       while a short one just stays aligned with the target until it hits the edge. */
+    max-width: min(100%, calc(100vw - 16px));
 }
 
 .is-mobile .checkbox-style-menu-widget ul {
@@ -118,7 +124,7 @@
     -ms-overflow-style: none;
     scroll-behavior: smooth;
     -webkit-overflow-scrolling: touch;
-    width: 100%; /* Allow the ul to expand to fill available space */
+    width: auto; /* Sized by its items; max-width below makes it scroll once the menu hits its cap */
     max-width: 100%;
     box-sizing: border-box;
 }
