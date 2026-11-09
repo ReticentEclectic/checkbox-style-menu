@@ -19,4 +19,6 @@ test('rejects a changed task line during the atomic write', () => {
     assert.equal(replaceTaskSymbol(original, 0, original, 'x'), '- [x] task');
     assert.equal(replaceTaskSymbol('- [ ] revised', 0, original, 'x'), '- [ ] revised');
     assert.equal(replaceTaskSymbol('- [x] task', 0, original, '/'), '- [x] task');
+    assert.equal(replaceTaskSymbol('+ [ ] task', 0, '+ [ ] task', '!'), '+ [!] task');
+    assert.equal(replaceTaskSymbol('1) [ ] task', 0, '1) [ ] task', 'x'), '1) [x] task');
 });

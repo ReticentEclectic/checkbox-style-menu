@@ -99,8 +99,8 @@ const CHECKBOX_STYLES = [
  * CHECKBOX_REGEX: Matches entire checkbox lines (- [ ] text or 1. [x] text)
  * CHECKBOX_SYMBOL_REGEX: Extracts just the checkbox symbol from a line
  */
-const CHECKBOX_REGEX = /^\s*(?:-|\d+\.)\s*\[(.)\]\s*(.*)?$/;
-const CHECKBOX_SYMBOL_REGEX = /(?:-|\d+\.)\s*\[(.)\]/;
+const CHECKBOX_REGEX = /^\s*(?:[-*+]|\d+[.)])\s+\[(.)\]\s*(.*)?$/;
+const CHECKBOX_SYMBOL_REGEX = /(?:[-*+]|\d+[.)])\s+\[(.)\]/;
 
 /** Default plugin configuration - basic styles enabled by default */
 const DEFAULT_SETTINGS: CheckboxStyleSettings = {
@@ -1392,7 +1392,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             const label = li.querySelector<HTMLElement>(':scope > p') ?? li;
             const text = [...label.childNodes].filter(node => node !== checkbox && !(node instanceof HTMLElement && node.matches('ul, ol')))
                 .map(node => node.textContent ?? '').join('').trim();
-            const section = ctx.getSectionInfo(li);
+            const section = ctx.getSectionInfo(li) ?? ctx.getSectionInfo(el);
             if (!section) continue;
             const line = resolveTaskLine(lines, section, li.getAttribute('data-line') ?? checkbox.getAttribute('data-line'), text);
             if (line === null) continue;
