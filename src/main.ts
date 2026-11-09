@@ -1250,10 +1250,12 @@ class ReadingCheckboxHandler extends MarkdownRenderChild {
     onload() {
         const root = this.containerEl;
         const signal = this.abort.signal;
+        const inReadingView = () => Boolean(this.checkbox.closest('.markdown-preview-view')) &&
+            !this.checkbox.closest('.internal-embed');
         const menuEnabled = () => this.plugin.settings.triggerMethod !== 'right-click';
         const show = (trigger: 'long-press' | 'right-click') => {
             const current = this.original.match(CHECKBOX_SYMBOL_REGEX)?.[1];
-            if (!current || !this.checkbox.isConnected) return;
+            if (!current || !inReadingView()) return;
             if (trigger === 'long-press') this.suppressClick = this.checkbox;
             if (this.plugin.settings.enableHapticFeedback) triggerHapticFeedback(75);
             this.widget?.destroy();
@@ -1274,7 +1276,7 @@ class ReadingCheckboxHandler extends MarkdownRenderChild {
             void this.widget.show();
         };
         const begin = (target: EventTarget | null, x: number, y: number) => {
-            if (target !== this.checkbox || !menuEnabled()) return;
+            if (target !== this.checkbox || !inReadingView() || !menuEnabled()) return;
             this.pressed = this.checkbox;
             this.start = { x, y };
             this.clearTimer();
@@ -1295,11 +1297,11 @@ class ReadingCheckboxHandler extends MarkdownRenderChild {
         root.addEventListener('touchend', () => this.release(), { signal, capture: true });
         root.addEventListener('touchcancel', () => this.release(), { signal, capture: true });
         root.addEventListener('contextmenu', e => {
-            if (e.target !== this.checkbox || this.plugin.settings.triggerMethod === 'long-press') return;
+            if (e.target !== this.checkbox || !inReadingView() || this.plugin.settings.triggerMethod === 'long-press') return;
             e.preventDefault(); e.stopImmediatePropagation(); this.release(); show('right-click');
         }, { signal, capture: true });
         root.addEventListener('click', e => {
-            if (e.target !== this.checkbox || this.syntheticClick) return;
+            if (e.target !== this.checkbox || !inReadingView() || this.syntheticClick) return;
             if (this.suppressClick === this.checkbox) {
                 e.preventDefault(); e.stopImmediatePropagation(); this.suppressClick = null; return;
             }
@@ -1387,7 +1389,8 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
     }
 
     private async processReadingCheckboxes(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
-        if (el.closest('.internal-embed') || !el.closest('.markdown-preview-view')) return;
+        // Sections may be rendered in a staging container. Check the view when
+        // handling an interaction, after Obsidian has attached the checkbox.
         const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
         if (!(file instanceof TFile) || file.extension !== 'md') return;
         const tasks = [...el.querySelectorAll<HTMLElement>('li.task-list-item')];
@@ -1403,7 +1406,10 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
                 .map(node => node.textContent ?? '').join('').trim();
             const section = ctx.getSectionInfo(li) ?? ctx.getSectionInfo(el);
             if (!section) continue;
-            const line = resolveTaskLine(lines, section, li.getAttribute('data-line') ?? checkbox.getAttribute('data-line'), text);
+            const itemLine = li.getAttribute('data-line');
+            const renderedLine = itemLine !== null && /^\d+$/.test(itemLine)
+                ? itemLine : checkbox.getAttribute('data-line');
+            const line = resolveTaskLine(lines, section, renderedLine, text);
             if (line === null) continue;
             this.readingHandlers.get(checkbox)?.unload();
             const handler = new ReadingCheckboxHandler(li, this, file, line, lines[line], checkbox);
