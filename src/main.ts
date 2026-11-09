@@ -1299,7 +1299,7 @@ class ReadingCheckboxHandler extends MarkdownRenderChild {
             e.preventDefault(); e.stopImmediatePropagation(); this.release(); show('right-click');
         }, { signal, capture: true });
         root.addEventListener('click', e => {
-            if (e.target !== this.checkbox || this.syntheticClick || !e.isTrusted) return;
+            if (e.target !== this.checkbox || this.syntheticClick) return;
             if (this.suppressClick === this.checkbox) {
                 e.preventDefault(); e.stopImmediatePropagation(); this.suppressClick = null; return;
             }
@@ -1320,7 +1320,12 @@ class ReadingCheckboxHandler extends MarkdownRenderChild {
 
     private clearTimer() { if (this.timer) clearTimeout(this.timer); this.timer = null; }
     private release() { this.clearTimer(); this.pressed = null; this.start = null; }
-    onunload() { this.release(); this.abort.abort(); this.widget?.destroy(); }
+    onunload() {
+        this.release();
+        this.abort.abort();
+        this.widget?.destroy();
+        this.plugin.releaseReadingCheckbox(this.checkbox, this);
+    }
 }
 
 /**
@@ -1352,7 +1357,11 @@ const checkboxViewPlugin = ViewPlugin.fromClass(class {
 export default class CheckboxStyleMenuPlugin extends Plugin {
     settings!: CheckboxStyleSettings;
     public checkboxStyles = CHECKBOX_STYLES.map(style => ({ ...style, enabled: false }));
-    private readingCheckboxes = new WeakSet<HTMLElement>();
+    private readingHandlers = new WeakMap<HTMLElement, ReadingCheckboxHandler>();
+
+    releaseReadingCheckbox(checkbox: HTMLElement, handler: ReadingCheckboxHandler) {
+        if (this.readingHandlers.get(checkbox) === handler) this.readingHandlers.delete(checkbox);
+    }
     
     /** 
      * Performance optimization: cache enabled styles to avoid filtering repeatedly
@@ -1388,7 +1397,7 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
         catch { return; } // The note may have been removed while the preview rendered.
         for (const li of tasks) {
             const checkbox = li.querySelector<HTMLElement>(':scope > input.task-list-item-checkbox, :scope > p > input.task-list-item-checkbox');
-            if (!checkbox || this.readingCheckboxes.has(checkbox) || checkbox.closest('.checkbox-style-menu-widget')) continue;
+            if (!checkbox || checkbox.closest('.checkbox-style-menu-widget')) continue;
             const label = li.querySelector<HTMLElement>(':scope > p') ?? li;
             const text = [...label.childNodes].filter(node => node !== checkbox && !(node instanceof HTMLElement && node.matches('ul, ol')))
                 .map(node => node.textContent ?? '').join('').trim();
@@ -1396,8 +1405,10 @@ export default class CheckboxStyleMenuPlugin extends Plugin {
             if (!section) continue;
             const line = resolveTaskLine(lines, section, li.getAttribute('data-line') ?? checkbox.getAttribute('data-line'), text);
             if (line === null) continue;
-            this.readingCheckboxes.add(checkbox);
-            ctx.addChild(new ReadingCheckboxHandler(li, this, file, line, lines[line], checkbox));
+            this.readingHandlers.get(checkbox)?.unload();
+            const handler = new ReadingCheckboxHandler(li, this, file, line, lines[line], checkbox);
+            this.readingHandlers.set(checkbox, handler);
+            ctx.addChild(handler);
         }
     }
 
