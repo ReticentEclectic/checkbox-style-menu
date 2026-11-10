@@ -68,9 +68,12 @@ Provides an intuitive menu for quickly changing checkbox styles in [Obsidian](ht
 ### Triggering the Menu
 
 Choose your preferred method in settings:
+
 - **Long-press** (default): Hold a checkbox for a moment
 - **Right-click**: Right-click a checkbox to open the menu
 - **Hotkey**: Assign a custom keyboard shortcut in **Settings → Hotkeys**
+
+Long-press and right-click work in Live Preview and Reading mode. The hotkey works while editing.
 
 ### Desktop
 
@@ -117,16 +120,16 @@ By default, clicking a checkbox toggles between unchecked (`[ ]`) and checked (`
 
 Clicking a checkbox now steps through your states in order, wrapping back to the first state after the last.
 
-**Note:** Like the rest of this plugin, the custom cycle only applies while editing (Live Preview / Source mode) - Reading view keeps the default toggle behavior regardless of this setting.
+The custom cycle applies in Live Preview and Reading mode. The menu hotkey remains editor-only.
 
 **Tasks plugin users:** if a state you choose already means something else to the Tasks plugin (or another checkbox-aware plugin), double-check that your custom cycle doesn't conflict with it.
 
 ## Compatibility
 
-- **Obsidian Version**: Requires Obsidian 0.15.0 or later
+- **Obsidian Version**: Requires Obsidian 1.1.0 or later
 - **Platforms**: Desktop and Mobile
 - **Note Types**: Works with any note containing markdown checkboxes
-- **Live-Preview Only**: Does not work in *Reading view* or *Source mode*
+- **Modes**: Supports Live Preview and Reading mode in ordinary Markdown notes. The hotkey requires an editor cursor. Embedded notes and other plugins' task views are not supported.
 - **Requires Compatible Theme:** Any theme that adds checkbox styles (e.g. [Minimal](https://github.com/kepano/obsidian-minimal) or [Things](https://github.com/colineckert/obsidian-things))
 
 ## Third-Party Plugin Compatibility
